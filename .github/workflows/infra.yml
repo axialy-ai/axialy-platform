@@ -1,1 +1,33 @@
+# Runs every push to main and builds your cloud
+name: Terraform DigitalOcean
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    env:
+      DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+      TF_VAR_do_token: ${{ secrets.DIGITALOCEAN_TOKEN }}
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.8.2
+
+      - name: Terraform init
+        run: terraform -chdir=infra init
+
+      - name: Terraform plan
+        run: terraform -chdir=infra plan -input=false
+
+      - name: Terraform apply (auto)
+        if: github.ref == 'refs/heads/main'
+        run: terraform -chdir=infra apply -auto-approve -input=false
 
