@@ -4,8 +4,7 @@ terraform {
   required_providers {
     digitalocean = {
       source  = "digitalocean/digitalocean"
-      # Use the newest 2.55.x patch that exists today—
-      # stick to “2.x” but never jump to 3.x automatically.
+      # Stay on the newest 2.55.x patch (2.56.0 doesn’t exist yet)
       version = "~> 2.55"
     }
   }
