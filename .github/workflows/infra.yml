@@ -1,11 +1,13 @@
-# GitHub Action – keeps DigitalOcean & NameSilo in sync on every push to main
-name: Terraform DigitalOcean
+name: Terraform DigitalOcean & Marketing-Site Deploy
 
 on:
   push:
     branches: [ "main" ]
 
 jobs:
+# ──────────────────────────────────────────────────────────
+# 1) Build / maintain infrastructure & DNS (unchanged)
+# ──────────────────────────────────────────────────────────
   terraform:
     runs-on: ubuntu-latest
     env:
@@ -14,11 +16,22 @@ jobs:
       NAMESILO_API_KEY:   ${{ secrets.NAMESILO_API_KEY }}
       NAMESILO_DOMAIN:    axialy.ai
 
+    outputs:
+      root_ip:      ${{ steps.get_ips.outputs.root_ip }}
+      site_changed: ${{ steps.filter.outputs.marketing == 'true' }}
+
     steps:
-    # ── Checkout code ────────────────────────────────────────────────
+    # Was the marketing site touched?
+    - id: filter
+      uses: dorny/paths-filter@v3
+      with:
+        filters: |
+          marketing:
+            - 'axialy-marketing-site/**'
+
     - uses: actions/checkout@v4
 
-    # ── Install doctl ────────────────────────────────────────────────
+    # doctl
     - name: Install doctl
       run: |
         set -e
@@ -27,116 +40,66 @@ jobs:
         curl -sL "https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz" \
           | tar -xz
         sudo mv doctl /usr/local/bin
-
     - name: doctl auth
       run: doctl auth init -t "$DIGITALOCEAN_TOKEN"
 
-    # ── Terraform CLI ────────────────────────────────────────────────
+    # Terraform
     - uses: hashicorp/setup-terraform@v3
       with:
         terraform_version: 1.8.2
-
     - name: Terraform init
       run: terraform -chdir=infra init -upgrade
-
-    # ── Import existing DO resources (same logic, droplet list unchanged) ──
-    - name: Import existing resources
-      run: |
-        set -eo pipefail
-        cd infra
-        state_has () { [ -f terraform.tfstate ] && terraform state list | grep -q "^$1$"; }
-
-        # Project
-        PID=$(doctl projects list --format ID,Name --no-header | awk '$2=="Axialy"{print $1; exit}')
-        [ -n "$PID" ] && ! state_has digitalocean_project.axialy && \
-          terraform import digitalocean_project.axialy "$PID"
-
-        # DB cluster + DBs
-        CID=$(doctl databases list --format ID,Name --no-header | awk '$2=="axialy-db-cluster"{print $1; exit}')
-        if [ -n "$CID" ]; then
-          state_has digitalocean_database_cluster.mysql || \
-            terraform import digitalocean_database_cluster.mysql "$CID"
-          declare -A DBS=( ["ui"]="Axialy_UI" ["admin"]="Axialy_Admin" )
-          for RES in "${!DBS[@]}"; do
-            DB="${DBS[$RES]}"
-            if doctl databases db list "$CID" --format Name --no-header | grep -qw "$DB" \
-               && ! state_has "digitalocean_database_db.${RES}"
-            then
-              terraform import "digitalocean_database_db.${RES}" "${CID},${DB}"
-            fi
-          done
-        fi
-
-        # Droplets
-        declare -A DROPS=(
-          ["ui"]="ui.axialy.ai"
-          ["api"]="api.axialy.ai"
-          ["admin"]="admin.axialy.ai"
-          ["root"]="axialy.ai"
-        )
-        for RES in "${!DROPS[@]}"; do
-          NAME="${DROPS[$RES]}"
-          DID=$(doctl compute droplet list --format ID,Name --no-header \
-                 | awk -v n="$NAME" '$2==n{print $1; exit}')
-          if [ -n "$DID" ] && ! state_has "digitalocean_droplet.${RES}"; then
-            terraform import "digitalocean_droplet.${RES}" "$DID"
-          fi
-        done
-
-    # ── Plan & apply ─────────────────────────────────────────────────
+    - name: Import existing resources   # …unchanged import logic…
+      run: bash infra/import_existing.sh    # (<── the same shell block you already use)
     - name: Terraform plan
       run: terraform -chdir=infra plan -input=false
-
     - name: Terraform apply
-      if: github.ref == 'refs/heads/main'
       run: terraform -chdir=infra apply -auto-approve -input=false
 
-    # ── Update NameSilo DNS records ─────────────────────────────────
+    # Grab the root-site IP for the deploy job
+    - id: get_ips
+      run: echo "root_ip=$(terraform -chdir=infra output -raw droplet_ips.root)" >> "$GITHUB_OUTPUT"
+
+    # Update NameSilo DNS  (unchanged, still writes blank host for apex)
     - name: Update NameSilo DNS
-      if: github.ref == 'refs/heads/main'
-      env:
-        DOMAIN: ${{ env.NAMESILO_DOMAIN }}
+      run: bash infra/update_namesilo.sh
+
+# ──────────────────────────────────────────────────────────
+# 2) Re-deploy axialy-marketing-site/  (runs only if changed)
+# ──────────────────────────────────────────────────────────
+  deploy_marketing_site:
+    needs: terraform
+    if: needs.terraform.outputs.site_changed == 'true'
+    runs-on: ubuntu-latest
+    env:
+      DROPLET_IP:      ${{ needs.terraform.outputs.root_ip }}
+      SSH_PRIVATE_KEY: ${{ secrets.DROPLET_SSH_KEY }}   # one-time secret, see below
+      SSH_USER:        root                              # or “ubuntu”
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install rsync & ssh client
+      run: sudo apt-get update -y && sudo apt-get install -y rsync openssh-client
+
+    - name: Configure SSH
       run: |
-        set -e
+        mkdir -p ~/.ssh
+        echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan -H "$DROPLET_IP" >> ~/.ssh/known_hosts
 
-        KEY=$NAMESILO_API_KEY
-        DOMAIN=$NAMESILO_DOMAIN
+    # 1. Ensure Nginx is present & running (idempotent)
+    - name: Install / start Nginx on droplet
+      run: |
+        ssh -o StrictHostKeyChecking=no "$SSH_USER@$DROPLET_IP" \
+          'sudo apt-get update -y && sudo apt-get install -y nginx && sudo systemctl enable --now nginx'
 
-        # ---------- helper: add or update an A-record ----------
-        upsert () {
-          RRHOST="$1"         # "" for apex
-          IP="$2"
+    # 2. Sync site files
+    - name: Upload marketing site
+      run: |
+        rsync -avz --delete axialy-marketing-site/ "$SSH_USER@$DROPLET_IP:/var/www/html/"
 
-          # list existing records
-          LIST=$(curl -s "https://www.namesilo.com/api/dnsListRecords?version=1&type=json&key=${KEY}&domain=${DOMAIN}")
-          RRID=$(echo "$LIST" | jq -r ".namesilo.response.resource_record[] \
-                 | select(.type==\"A\" and (.host==\"${DOMAIN}\" and \"${RRHOST}\"==\"\" or .host==\"${RRHOST}.${DOMAIN}\")) \
-                 | .record_id" | head -n 1)
-
-          # build base URL pieces
-          if [ -z "$RRHOST" ]; then
-            HOST_PARAM=""                     # apex: leave rrhost blank
-          else
-            HOST_PARAM="rrhost=${RRHOST}&"
-          fi
-
-          if [ -n "$RRID" ]; then
-            curl -s "https://www.namesilo.com/api/dnsUpdateRecord?version=1&type=json&key=${KEY}&domain=${DOMAIN}&rrid=${RRID}&${HOST_PARAM}rrvalue=${IP}&rrttl=3600" > /dev/null
-          else
-            curl -s "https://www.namesilo.com/api/dnsAddRecord?version=1&type=json&key=${KEY}&domain=${DOMAIN}&${HOST_PARAM}rrvalue=${IP}&rrtype=A&rrttl=3600" > /dev/null
-          fi
-        }
-
-        # ---------- fetch droplet IPs ----------
-        IPS=$(terraform -chdir=infra output -json droplet_ips)
-        ADMIN_IP=$(echo "$IPS" | jq -r '.admin')
-        UI_IP=$(echo "$IPS"    | jq -r '.ui')
-        API_IP=$(echo "$IPS"   | jq -r '.api')
-        ROOT_IP=$(echo "$IPS"  | jq -r '.root')
-
-        # ---------- upsert all required records ----------
-        upsert "admin" "$ADMIN_IP"
-        upsert "ui"    "$UI_IP"
-        upsert "api"   "$API_IP"
-        upsert "www"   "$ROOT_IP"
-        upsert ""      "$ROOT_IP"   # apex/root record – rrhost left blank
+    # 3. Reload Nginx to pick up new files
+    - name: Reload Nginx
+      run: ssh "$SSH_USER@$DROPLET_IP" 'sudo systemctl reload nginx'
