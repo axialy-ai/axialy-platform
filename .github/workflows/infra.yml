@@ -1,4 +1,4 @@
-# GitHub Action – keeps DigitalOcean, NameSilo and the marketing site in sync
+# GitHub Action – keeps DigitalOcean & NameSilo in sync on every push to main
 name: Terraform DigitalOcean
 
 on:
@@ -8,60 +8,41 @@ on:
 jobs:
   terraform:
     runs-on: ubuntu-latest
-
-    # ── Repository/secret-wide environment ──────────────────────────
     env:
       DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
       TF_VAR_do_token:    ${{ secrets.DIGITALOCEAN_TOKEN }}
       NAMESILO_API_KEY:   ${{ secrets.NAMESILO_API_KEY }}
       NAMESILO_DOMAIN:    axialy.ai
-      DROPLET_SSH_KEY:    ${{ secrets.DROPLET_SSH_KEY }}
+      DROPLET_SSH_KEY:    ${{ secrets.DROPLET_SSH_KEY }}   # private key for SCP
 
     steps:
-    # ────────────────────────────────────────────────────────────────
-    # 1)  LIGHTWEIGHT CHECKOUT so paths-filter has a Git repo
-    # ────────────────────────────────────────────────────────────────
-    - name: Checkout (for filter)
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 2   # only last commit range is enough for diff
+    # ── 1) Checkout code ─────────────────────────────────────────────
+    - uses: actions/checkout@v4
 
-    # ────────────────────────────────────────────────────────────────
-    # 2)  Determine whether the marketing site changed
-    # ────────────────────────────────────────────────────────────────
+    # ── 2) Detect whether the marketing site changed ────────────────
     - id: filter
       uses: dorny/paths-filter@v3
-      with: |
+      with:
         list-files: none
+        initial-fetch-depth: 100
         filters: |
           marketing:
             - 'axialy-marketing-site/**'
 
-    # ────────────────────────────────────────────────────────────────
-    # 3)  FULL CHECKOUT for Terraform & deployment
-    # ────────────────────────────────────────────────────────────────
-    - name: Checkout full repository
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0   # we need whole history for tags / modules etc.
-
-    # ────────────────────────────────────────────────────────────────
-    # 4)  Install doctl & authenticate
-    # ────────────────────────────────────────────────────────────────
+    # ── 3) Install doctl & authenticate ─────────────────────────────
     - name: Install doctl
       run: |
         set -e
-        VER=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest \
-                 | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
-        curl -sL "https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz" \
-          | tar -xz
+        VER=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest |
+                grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
+        curl -sL "https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz" |
+          tar -xz
         sudo mv doctl /usr/local/bin
+
     - name: doctl auth
       run: doctl auth init -t "$DIGITALOCEAN_TOKEN"
 
-    # ────────────────────────────────────────────────────────────────
-    # 5)  Terraform CLI
-    # ────────────────────────────────────────────────────────────────
+    # ── 4) Terraform CLI ────────────────────────────────────────────
     - uses: hashicorp/setup-terraform@v3
       with:
         terraform_version: 1.8.2
@@ -69,27 +50,23 @@ jobs:
     - name: Terraform init
       run: terraform -chdir=infra init -upgrade
 
-    # ────────────────────────────────────────────────────────────────
-    # 6)  Import any DO resources created outside of Terraform
-    # ────────────────────────────────────────────────────────────────
+    # ── 5) Import existing DigitalOcean resources ───────────────────
     - name: Import existing resources
       run: |
         set -eo pipefail
         cd infra
-        # helper: does state contain resource?
         state_has () { [ -f terraform.tfstate ] && terraform state list | grep -q "^$1$"; }
 
-        # ---------- Project ----------
+        # Project
         PID=$(doctl projects list --format ID,Name --no-header | awk '$2=="Axialy"{print $1; exit}')
         [ -n "$PID" ] && ! state_has digitalocean_project.axialy && \
           terraform import digitalocean_project.axialy "$PID"
 
-        # ---------- Managed MySQL cluster & DBs ----------
+        # DB cluster + DBs
         CID=$(doctl databases list --format ID,Name --no-header | awk '$2=="axialy-db-cluster"{print $1; exit}')
         if [ -n "$CID" ]; then
           state_has digitalocean_database_cluster.mysql || \
             terraform import digitalocean_database_cluster.mysql "$CID"
-
           declare -A DBS=( ["ui"]="Axialy_UI" ["admin"]="Axialy_Admin" )
           for RES in "${!DBS[@]}"; do
             DB="${DBS[$RES]}"
@@ -101,7 +78,7 @@ jobs:
           done
         fi
 
-        # ---------- Droplets ----------
+        # Droplets
         declare -A DROPS=(
           ["ui"]="ui.axialy.ai"
           ["api"]="api.axialy.ai"
@@ -110,16 +87,13 @@ jobs:
         )
         for RES in "${!DROPS[@]}"; do
           NAME="${DROPS[$RES]}"
-          DID=$(doctl compute droplet list --format ID,Name --no-header \
-                   | awk -v n="$NAME" '$2==n{print $1; exit}')
+          DID=$(doctl compute droplet list --format ID,Name --no-header | awk -v n="$NAME" '$2==n{print $1; exit}')
           if [ -n "$DID" ] && ! state_has "digitalocean_droplet.${RES}"; then
             terraform import "digitalocean_droplet.${RES}" "$DID"
           fi
         done
 
-    # ────────────────────────────────────────────────────────────────
-    # 7)  Terraform plan & apply
-    # ────────────────────────────────────────────────────────────────
+    # ── 6) Plan & apply (main only) ─────────────────────────────────
     - name: Terraform plan
       run: terraform -chdir=infra plan -input=false
 
@@ -127,51 +101,32 @@ jobs:
       if: github.ref == 'refs/heads/main'
       run: terraform -chdir=infra apply -auto-approve -input=false
 
-    # after apply we need droplet IPs for DNS & SCP
-    - name: Export droplet IPs to outputs
-      id: ips
+    # ── 7) Expose droplet IPs to later steps ────────────────────────
+    - id: ips
       run: |
-        set -e
-        ROOT_IP=$( terraform -chdir=infra output -raw 'droplet_ips.root' )
-        UI_IP=$(   terraform -chdir=infra output -raw 'droplet_ips.ui'   )
-        API_IP=$(  terraform -chdir=infra output -raw 'droplet_ips.api'  )
-        ADMIN_IP=$(terraform -chdir=infra output -raw 'droplet_ips.admin')
-        echo "root=${ROOT_IP}"   >> "$GITHUB_OUTPUT"
-        echo "ui=${UI_IP}"       >> "$GITHUB_OUTPUT"
-        echo "api=${API_IP}"     >> "$GITHUB_OUTPUT"
-        echo "admin=${ADMIN_IP}" >> "$GITHUB_OUTPUT"
+        IPS=$(terraform -chdir=infra output -json droplet_ips)
+        echo "ROOT_IP=$(  echo "$IPS" | jq -r '.root')"  >> "$GITHUB_ENV"
+        echo "UI_IP=$(    echo "$IPS" | jq -r '.ui')"    >> "$GITHUB_ENV"
+        echo "API_IP=$(   echo "$IPS" | jq -r '.api')"   >> "$GITHUB_ENV"
+        echo "ADMIN_IP=$( echo "$IPS" | jq -r '.admin')" >> "$GITHUB_ENV"
 
-    # ────────────────────────────────────────────────────────────────
-    # 8)  Update NameSilo DNS records (apex + www + sub-domains)
-    # ────────────────────────────────────────────────────────────────
+    # ── 8) Update NameSilo DNS records ──────────────────────────────
     - name: Update NameSilo DNS
       if: github.ref == 'refs/heads/main'
       env:
         DOMAIN: ${{ env.NAMESILO_DOMAIN }}
-        ROOT_IP:  ${{ steps.ips.outputs.root }}
-        UI_IP:    ${{ steps.ips.outputs.ui }}
-        API_IP:   ${{ steps.ips.outputs.api }}
-        ADMIN_IP: ${{ steps.ips.outputs.admin }}
       run: |
         set -e
         KEY=$NAMESILO_API_KEY
         DOMAIN=$NAMESILO_DOMAIN
 
-        # helper to upsert A-records
-        upsert () {
-          RRHOST="$1"    # "" for apex
-          IP="$2"
+        upsert () {                       # $1 = rrhost, $2 = IP
+          RRHOST="$1"; IP="$2"
           LIST=$(curl -s "https://www.namesilo.com/api/dnsListRecords?version=1&type=json&key=${KEY}&domain=${DOMAIN}")
-          RRID=$(echo "$LIST" | jq -r ".namesilo.response.resource_record[] \
-                 | select(.type==\"A\" and ((.host==\"${DOMAIN}\" and \"${RRHOST}\"==\"\") or .host==\"${RRHOST}.${DOMAIN}\")) \
-                 | .record_id" | head -n1)
-
-          if [ -z "$RRHOST" ]; then
-            HOST_PARAM=""
-          else
-            HOST_PARAM="rrhost=${RRHOST}&"
-          fi
-
+          RRID=$(echo "$LIST" | jq -r ".namesilo.response.resource_record[] |
+                   select(.type==\"A\" and ((.host==\"${DOMAIN}\" and \"${RRHOST}\"==\"\") or .host==\"${RRHOST}.${DOMAIN}\")) |
+                   .record_id" | head -n 1)
+          HOST_PARAM=$([ -z "$RRHOST" ] && echo "" || echo "rrhost=${RRHOST}&")
           if [ -n "$RRID" ]; then
             curl -s "https://www.namesilo.com/api/dnsUpdateRecord?version=1&type=json&key=${KEY}&domain=${DOMAIN}&rrid=${RRID}&${HOST_PARAM}rrvalue=${IP}&rrttl=3600" > /dev/null
           else
@@ -179,25 +134,21 @@ jobs:
           fi
         }
 
-        # upsert records
         upsert "admin" "$ADMIN_IP"
         upsert "ui"    "$UI_IP"
         upsert "api"   "$API_IP"
         upsert "www"   "$ROOT_IP"
         upsert ""      "$ROOT_IP"   # apex
 
-    # ────────────────────────────────────────────────────────────────
-    # 9)  Deploy marketing site if it changed
-    # ────────────────────────────────────────────────────────────────
-    - name: Deploy marketing site
+    # ── 9) Deploy marketing site when it changed ────────────────────
+    - name: Deploy axialy-marketing-site to root droplet
       if: steps.filter.outputs.marketing == 'true'
       uses: appleboy/scp-action@v0.1.5
       with:
-        host:   ${{ steps.ips.outputs.root }}        # axialy.ai droplet
+        host:   ${{ env.ROOT_IP }}
         username: root
-        port: 22
-        key: ${{ env.DROPLET_SSH_KEY }}
-        source: "axialy-marketing-site/*"
-        target: "/var/www/html"          # adjust to your document-root
-        strip_components: 1              # remove leading path
-        rm: false                        # do not delete other files on server
+        key:     ${{ env.DROPLET_SSH_KEY }}
+        source:  "axialy-marketing-site/*"
+        target:  "/var/www/html/"          # adjust if your Nginx root differs
+        strip_components: 1                # drop the leading folder
+
