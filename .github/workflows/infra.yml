@@ -39,7 +39,7 @@ jobs:
     - name: Terraform init
       run: terraform -chdir=infra init -upgrade
 
-    # ── Import existing DO resources (updated droplet list) ──────────
+    # ── Import existing DO resources (same logic, droplet list unchanged) ──
     - name: Import existing resources
       run: |
         set -eo pipefail
@@ -67,7 +67,7 @@ jobs:
           done
         fi
 
-        # Droplets – includes new 'root' droplet (axialy.ai)
+        # Droplets
         declare -A DROPS=(
           ["ui"]="ui.axialy.ai"
           ["api"]="api.axialy.ai"
@@ -99,36 +99,44 @@ jobs:
       run: |
         set -e
 
-        # -------------- helper functions -----------------
+        KEY=$NAMESILO_API_KEY
+        DOMAIN=$NAMESILO_DOMAIN
+
+        # ---------- helper: add or update an A-record ----------
         upsert () {
-          HOST=$1
-          IP=$2
-          KEY=$NAMESILO_API_KEY
-          DOMAIN=$NAMESILO_DOMAIN
+          RRHOST="$1"         # "" for apex
+          IP="$2"
 
           # list existing records
           LIST=$(curl -s "https://www.namesilo.com/api/dnsListRecords?version=1&type=json&key=${KEY}&domain=${DOMAIN}")
           RRID=$(echo "$LIST" | jq -r ".namesilo.response.resource_record[] \
-                 | select(.type==\"A\" and (.host==\"${HOST}.${DOMAIN}\" or (.host==\"${DOMAIN}\" and \"${HOST}\"==\"@\"))) \
+                 | select(.type==\"A\" and (.host==\"${DOMAIN}\" and \"${RRHOST}\"==\"\" or .host==\"${RRHOST}.${DOMAIN}\")) \
                  | .record_id" | head -n 1)
 
-          if [ -n "$RRID" ]; then
-            curl -s "https://www.namesilo.com/api/dnsUpdateRecord?version=1&type=json&key=${KEY}&domain=${DOMAIN}&rrid=${RRID}&rrhost=${HOST}&rrvalue=${IP}&rrttl=3600" > /dev/null
+          # build base URL pieces
+          if [ -z "$RRHOST" ]; then
+            HOST_PARAM=""                     # apex: leave rrhost blank
           else
-            curl -s "https://www.namesilo.com/api/dnsAddRecord?version=1&type=json&key=${KEY}&domain=${DOMAIN}&rrhost=${HOST}&rrvalue=${IP}&rrtype=A&rrttl=3600" > /dev/null
+            HOST_PARAM="rrhost=${RRHOST}&"
+          fi
+
+          if [ -n "$RRID" ]; then
+            curl -s "https://www.namesilo.com/api/dnsUpdateRecord?version=1&type=json&key=${KEY}&domain=${DOMAIN}&rrid=${RRID}&${HOST_PARAM}rrvalue=${IP}&rrttl=3600" > /dev/null
+          else
+            curl -s "https://www.namesilo.com/api/dnsAddRecord?version=1&type=json&key=${KEY}&domain=${DOMAIN}&${HOST_PARAM}rrvalue=${IP}&rrtype=A&rrttl=3600" > /dev/null
           fi
         }
 
-        # -------------- fetch droplet IPs ----------------
+        # ---------- fetch droplet IPs ----------
         IPS=$(terraform -chdir=infra output -json droplet_ips)
         ADMIN_IP=$(echo "$IPS" | jq -r '.admin')
         UI_IP=$(echo "$IPS"    | jq -r '.ui')
         API_IP=$(echo "$IPS"   | jq -r '.api')
         ROOT_IP=$(echo "$IPS"  | jq -r '.root')
 
-        # -------------- update/insert --------------------
-        upsert "admin"   "$ADMIN_IP"
-        upsert "ui"      "$UI_IP"
-        upsert "api"     "$API_IP"
-        upsert "www"     "$ROOT_IP"
-        upsert "@"       "$ROOT_IP"
+        # ---------- upsert all required records ----------
+        upsert "admin" "$ADMIN_IP"
+        upsert "ui"    "$UI_IP"
+        upsert "api"   "$API_IP"
+        upsert "www"   "$ROOT_IP"
+        upsert ""      "$ROOT_IP"   # apex/root record – rrhost left blank
