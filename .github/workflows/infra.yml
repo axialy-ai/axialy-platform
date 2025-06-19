@@ -1,56 +1,115 @@
-name: Terraform DigitalOcean
+name: DigitalOcean & Website Deploy
 
 on:
   push:
     branches: [ main ]
-  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  NAMESILO_DOMAIN: axialy.ai
+  NAMESILO_API_KEY: ${{ secrets.NAMESILO_API_KEY }}
+  DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+  TF_VAR_do_token: ${{ secrets.DIGITALOCEAN_TOKEN }}
+  # Droplet SSH key (public key already in DO; private key stored as secret)
+  DROPLET_SSH_KEY: ${{ secrets.DROPLET_SSH_KEY }}
 
 jobs:
-  terraform:
+  ## ---------- 1) Detect marketing-site changes ----------
+  filter:
     runs-on: ubuntu-latest
-
-    env:
-      DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}   # <- use the secret you already have
-      TF_VAR_do_token:    ${{ secrets.DIGITALOCEAN_TOKEN }}   # <- same token for Terraform
-      NAMESILO_API_KEY:   ${{ secrets.NAMESILO_API_KEY }}
-      NAMESILO_DOMAIN:    axialy.ai
-
+    outputs:
+      site_changed: ${{ steps.filter.outputs.marketing }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      - id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          token: ${{ github.token }}
+          list-files: none
+          filters: |
+            marketing:
+              - 'axialy-marketing-site/**'
+
+  ## ---------- 2) Provision / update infra ----------
+  terraform:
+    needs: filter
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       # install doctl
       - name: Install doctl
         run: |
           set -e
-          VER=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest |
-                grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
-          curl -sL "https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz" | tar -xz
+          VER=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest \
+                | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
+          curl -sL "https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz" \
+            | tar -xz
           sudo mv doctl /usr/local/bin
 
-      # authenticate
-      - name: Auth with DigitalOcean
+      - name: doctl auth
         run: doctl auth init -t "$DIGITALOCEAN_TOKEN"
 
-      # set up Terraform
-      - name: Setup Terraform
+      - name: Set up Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.8.2
-          cli_config_credentials_hostname: app.terraform.io
           terraform_wrapper: true
 
-      # init, import, plan, apply …
-      - name: Terraform init / import / apply
-        run: |
-          set -eo pipefail
-          terraform -chdir=infra init -upgrade
-          bash infra/import_existing.sh
-          terraform -chdir=infra plan -input=false
-          terraform -chdir=infra apply -auto-approve -input=false
+      - name: Terraform init
+        run: terraform -chdir=infra init -upgrade
 
-      # update DNS
+      - name: Import existing DO resources
+        run: bash infra/import_existing.sh
+
+      - name: Terraform apply
+        run: terraform -chdir=infra apply -auto-approve -input=false
+
+      # extract droplet IPs for DNS + deploy steps
+      - id: droplet_ips
+        run: |
+          echo "root=$(terraform -chdir=infra output -raw droplet_ips.root)"  >> "$GITHUB_OUTPUT"
+          echo "ui=$(terraform -chdir=infra output -raw droplet_ips.ui)"       >> "$GITHUB_OUTPUT"
+          echo "api=$(terraform -chdir=infra output -raw droplet_ips.api)"     >> "$GITHUB_OUTPUT"
+          echo "admin=$(terraform -chdir=infra output -raw droplet_ips.admin)" >> "$GITHUB_OUTPUT"
+
       - name: Update NameSilo DNS
         run: bash infra/update_namesilo.sh
+        env:
+          ROOT_IP:  ${{ steps.droplet_ips.outputs.root }}
+          UI_IP:    ${{ steps.droplet_ips.outputs.ui }}
+          API_IP:   ${{ steps.droplet_ips.outputs.api }}
+          ADMIN_IP: ${{ steps.droplet_ips.outputs.admin }}
+
+  ## ---------- 3) Deploy marketing site ----------
+  deploy-site:
+    needs: [filter, terraform]
+    if: needs.filter.outputs.site_changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout website files
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            axialy-marketing-site
+          sparse-checkout-cone-mode: false
+
+      - name: Install rsync & ssh-client
+        run: sudo apt-get update -y && sudo apt-get install -y rsync openssh-client
+
+      - name: Publish to axialy.ai droplet
+        env:
+          DROPLET_IP: ${{ needs.terraform.outputs.droplet_ips-root }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$DROPLET_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DROPLET_IP" >> ~/.ssh/known_hosts
+          rsync -avz --delete axialy-marketing-site/ root@"$DROPLET_IP":/var/www/html/
