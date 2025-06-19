@@ -6,7 +6,6 @@ on:
   workflow_dispatch: {}
 
 env:
-  # ── shared secrets ───────────────────────────────────────────────
   DIGITALOCEAN_TOKEN:  ${{ secrets.DO_TOKEN }}
   TF_VAR_do_token:      ${{ secrets.DO_TOKEN }}
 
@@ -14,16 +13,16 @@ env:
   NAMESILO_DOMAIN:      axialy.ai
 
 jobs:
-#────────────────────────────────────────────────────────────────────
-# 1) Identify what changed ------------------------------------------------------
-#────────────────────────────────────────────────────────────────────
+#───────────────────────────────────────────────────────────────────
+# 1)  Detect what changed
+#───────────────────────────────────────────────────────────────────
   filter:
     runs-on: ubuntu-latest
     outputs:
       site_changed: ${{ steps.paths.outputs.marketing }}
 
     steps:
-      - name: 🛎️  Checkout repository
+      - name: 🛎️  Check out repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -31,14 +30,17 @@ jobs:
       - id: paths
         name: 📂 Detect changes under axialy-marketing-site/
         uses: dorny/paths-filter@v3
-        with: |
-          filters:
+        with:
+          filters: |
             marketing:
               - 'axialy-marketing-site/**'
+          token: ${{ secrets.GITHUB_TOKEN }}
+          list-files: none
+          initial-fetch-depth: 100
 
-#────────────────────────────────────────────────────────────────────
-# 2) Terraform - create / update DO infra and publish DNS ----------------------
-#────────────────────────────────────────────────────────────────────
+#───────────────────────────────────────────────────────────────────
+# 2)  Terraform + DNS
+#───────────────────────────────────────────────────────────────────
   terraform:
     needs: filter
     runs-on: ubuntu-latest
@@ -49,24 +51,24 @@ jobs:
       admin_ip: ${{ steps.ip.outputs.admin }}
 
     steps:
-      # ── checkout ────────────────────────────────────────────────
-      - name: 🛎️  Checkout repository
+      - name: 🛎️  Check out repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # ── doctl install & login ───────────────────────────────────
+      # ── doctl ───────────────────────────────────────────────
       - name: 📦 Install doctl
         run: |
           set -e
-          VER=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest |
-                 grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
-          curl -sL "https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz" | tar -xz
+          VER=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest \
+                | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
+          curl -sL "https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz" \
+            | tar -xz
           sudo mv doctl /usr/local/bin
       - name: 🔑 Authenticate doctl
         run: doctl auth init -t "$DIGITALOCEAN_TOKEN"
 
-      # ── Terraform setup/init/import/plan/apply ------------------
+      # ── Terraform ──────────────────────────────────────────
       - name: 🛠️  Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
@@ -85,12 +87,12 @@ jobs:
       - name: ✅ terraform apply
         run: terraform -chdir=infra apply -auto-approve -input=false
 
-      # ── extract droplet IPs safely (map output) -----------------
+      # ── Capture droplet IPs (map ➜ separate vars) ──────────
       - name: 📦 Install jq
         run: sudo apt-get update -y && sudo apt-get install -y jq
 
       - id: ip
-        name: 🌐 Capture droplet IPs
+        name: 🌐 Extract droplet IPs
         shell: bash
         run: |
           JSON=$(terraform -chdir=infra output -json droplet_ips)
@@ -99,8 +101,8 @@ jobs:
           echo "api=$(echo   "$JSON" | jq -r '.api')"   >> "$GITHUB_OUTPUT"
           echo "admin=$(echo "$JSON" | jq -r '.admin')" >> "$GITHUB_OUTPUT"
 
-      # ── update NameSilo A-records --------------------------------
-      - name: 🛠️  Update DNS in NameSilo
+      # ── Update DNS A records in NameSilo ───────────────────
+      - name: 🛠️  Update NameSilo DNS
         env:
           ROOT_IP:  ${{ steps.ip.outputs.root }}
           UI_IP:    ${{ steps.ip.outputs.ui }}
@@ -108,19 +110,19 @@ jobs:
           ADMIN_IP: ${{ steps.ip.outputs.admin }}
         run: bash infra/update_namesilo.sh
 
-#────────────────────────────────────────────────────────────────────
-# 3) Deploy marketing site if its source changed ------------------------------
-#────────────────────────────────────────────────────────────────────
+#───────────────────────────────────────────────────────────────────
+# 3)  Deploy marketing site if its source changed
+#───────────────────────────────────────────────────────────────────
   deploy-marketing:
     needs: [ filter, terraform ]
     if: needs.filter.outputs.site_changed == 'true'
     runs-on: ubuntu-latest
 
     steps:
-      - name: 🛎️  Checkout repository
+      - name: 🛎️  Check out repo
         uses: actions/checkout@v4
 
-      - name: 📦 Install rsync & SSH client
+      - name: 📦 Install rsync & SSH
         run: sudo apt-get update -y && sudo apt-get install -y rsync openssh-client
 
       - name: 🔑 Load SSH key
