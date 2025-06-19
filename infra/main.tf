@@ -16,7 +16,7 @@ resource "digitalocean_project" "axialy" {
   environment = "Production"
 }
 
-# ── Droplets (Admin, UI, API, **NEW WWW**) ────────────────────────────
+# ── Droplets ──────────────────────────────────────────────────────────
 resource "digitalocean_droplet" "admin" {
   name   = "admin.axialy.ai"
   region = local.region
@@ -41,8 +41,8 @@ resource "digitalocean_droplet" "api" {
   tags   = ["axialy", "api"]
 }
 
-resource "digitalocean_droplet" "www" {          # ← new droplet
-  name   = "www.axialy.ai"
+resource "digitalocean_droplet" "root" {          # ← marketing site
+  name   = "axialy.ai"
   region = local.region
   size   = local.size
   image  = local.image
@@ -59,7 +59,6 @@ resource "digitalocean_database_cluster" "mysql" {
   node_count = 1
 }
 
-# Individual databases in the cluster
 resource "digitalocean_database_db" "admin" {
   cluster_id = digitalocean_database_cluster.mysql.id
   name       = "Axialy_Admin"
@@ -77,7 +76,7 @@ resource "digitalocean_project_resources" "attach" {
     digitalocean_droplet.admin.urn,
     digitalocean_droplet.ui.urn,
     digitalocean_droplet.api.urn,
-    digitalocean_droplet.www.urn,            # new URN
+    digitalocean_droplet.root.urn,
     digitalocean_database_cluster.mysql.urn,
   ]
 }
