@@ -1,4 +1,4 @@
-# GitHub Action: checks and (only if needed) fixes your DigitalOcean cloud
+# GitHub Action ─ keeps your DigitalOcean cloud in sync on every push to main
 name: Terraform DigitalOcean
 
 on:
@@ -9,77 +9,84 @@ jobs:
   terraform:
     runs-on: ubuntu-latest
     env:
-      # Your secret lives in Settings ▸ Secrets ▸ Actions
+      # Secret lives in Settings ▸ Secrets ▸ Actions
       DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
       TF_VAR_do_token:    ${{ secrets.DIGITALOCEAN_TOKEN }}
 
     steps:
-      # 1️⃣  Grab the repo code
-      - name: Check out code
-        uses: actions/checkout@v4
+    # 1️⃣  Check out the repo
+    - name: Check out code
+      uses: actions/checkout@v4
 
-      # 2️⃣  Install the DigitalOcean CLI (“doctl”) and log in
-      - name: Install doctl
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y doctl
-          doctl auth init -t "$DIGITALOCEAN_TOKEN"
+    # 2️⃣  Install **doctl** from the latest GitHub release (works on any Ubuntu)
+    - name: Install doctl CLI
+      run: |
+        set -e
+        VER=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest \
+                | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
+        curl -sL "https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz" \
+          | tar -xz
+        sudo mv doctl /usr/local/bin
+        doctl version
 
-      # 3️⃣  Install Terraform
-      - name: Set up Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.8.2
+    # 3️⃣  Log in to doctl with your secret token
+    - name: doctl auth
+      run: doctl auth init -t "$DIGITALOCEAN_TOKEN"
 
-      # 4️⃣  Init (-upgrade = grab newest provider patch)
-      - name: Terraform init
-        run: terraform -chdir=infra init -upgrade
+    # 4️⃣  Install Terraform
+    - name: Set up Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.8.2    # keep in sync with infra/versions.tf
 
-      # 5️⃣  Auto-import any items that already exist
-      - name: Import existing DigitalOcean resources (safe to run every time)
-        run: |
-          set -eo pipefail
-          cd infra
+    # 5️⃣  terraform init  (-upgrade grabs the newest 2.55.x provider patch)
+    - name: Terraform init
+      run: terraform -chdir=infra init -upgrade
 
-          # --- Project ---
-          PID=$(doctl projects list --format ID,Name --no-header | awk '$2=="Axialy"{print $1}')
-          if [ -n "$PID" ]; then
-            terraform state list | grep -q '^digitalocean_project.axialy$' || \
-              terraform import digitalocean_project.axialy "$PID"
-          fi
+    # 6️⃣  Import any resources that already exist so Terraform won’t call them “duplicates”
+    - name: Import existing DigitalOcean resources
+      run: |
+        set -eo pipefail
+        cd infra
 
-          # --- Database cluster ---
-          CID=$(doctl databases list --format ID,Name --no-header | awk '$2=="axialy-db-cluster"{print $1}')
-          if [ -n "$CID" ]; then
-            terraform state list | grep -q '^digitalocean_database_cluster.mysql$' || \
-              terraform import digitalocean_database_cluster.mysql "$CID"
+        # ── Project ───────────────────────────────────────────────
+        PID=$(doctl projects list --format ID,Name --no-header | awk '$2=="Axialy"{print $1}')
+        if [ -n "$PID" ] && ! terraform state list | grep -q '^digitalocean_project.axialy$'; then
+          terraform import digitalocean_project.axialy "$PID"
+        fi
 
-            # Inside that cluster, import UI & Admin DBs if they already exist
-            for DB in Axialy_UI Axialy_Admin; do
-              EXISTS=$(doctl databases db list "$CID" --format Name --no-header | grep -w "$DB" || true)
-              if [ -n "$EXISTS" ]; then
-                RESOURCE=$(echo "$DB" | tr '[:upper:]' '[:lower:]' | tr - _)
-                terraform state list | grep -q "^digitalocean_database_db.${RESOURCE}$" || \
-                  terraform import "digitalocean_database_db.${RESOURCE}" "${CID}:${DB}"
-              fi
-            done
-          fi
+        # ── Managed MySQL cluster & its two DBs ───────────────────
+        CID=$(doctl databases list --format ID,Name --no-header | awk '$2=="axialy-db-cluster"{print $1}')
+        if [ -n "$CID" ]; then
+          terraform state list | grep -q '^digitalocean_database_cluster.mysql$' || \
+            terraform import digitalocean_database_cluster.mysql "$CID"
 
-          # --- Droplets ---
-          declare -A DROPS=(["ui"]="ui.axialy.ai" ["api"]="api.axialy.ai" ["admin"]="admin.axialy.ai")
-          for RES in "${!DROPS[@]}"; do
-            NAME="${DROPS[$RES]}"
-            DID=$(doctl compute droplet list --format ID,Name --no-header | awk -v n="$NAME" '$2==n{print $1}')
-            if [ -n "$DID" ]; then
-              terraform state list | grep -q "^digitalocean_droplet.${RES}$" || \
-                terraform import "digitalocean_droplet.${RES}" "$DID"
+          declare -A DBS=( ["ui"]="Axialy_UI" ["admin"]="Axialy_Admin" )
+          for RES in "${!DBS[@]}"; do
+            DBNAME="${DBS[$RES]}"
+            if doctl databases db list "$CID" --format Name --no-header | grep -qw "$DBNAME" \
+              && ! terraform state list | grep -q "^digitalocean_database_db.${RES}$"
+            then
+              terraform import "digitalocean_database_db.${RES}" "${CID}:${DBNAME}"
             fi
           done
+        fi
 
-      # 6️⃣  Plan & apply
-      - name: Terraform plan
-        run: terraform -chdir=infra plan -input=false
+        # ── Droplets ──────────────────────────────────────────────
+        declare -A DROPS=( ["ui"]="ui.axialy.ai" ["api"]="api.axialy.ai" ["admin"]="admin.axialy.ai" )
+        for RES in "${!DROPS[@]}"; do
+          NAME="${DROPS[$RES]}"
+          DID=$(doctl compute droplet list --format ID,Name --no-header | awk -v n="$NAME" '$2==n{print $1}')
+          if [ -n "$DID" ] && ! terraform state list | grep -q "^digitalocean_droplet.${RES}$"; then
+            terraform import "digitalocean_droplet.${RES}" "$DID"
+          fi
+        done
 
-      - name: Terraform apply (auto)
-        if: github.ref == 'refs/heads/main'
-        run: terraform -chdir=infra apply -auto-approve -input=false
+    # 7️⃣  Show the plan (for the log)
+    - name: Terraform plan
+      run: terraform -chdir=infra plan -input=false
+
+    # 8️⃣  Apply automatically on main
+    - name: Terraform apply
+      if: github.ref == 'refs/heads/main'
+      run: terraform -chdir=infra apply -auto-approve -input=false
