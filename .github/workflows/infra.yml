@@ -1,137 +1,56 @@
-name: DigitalOcean Infrastructure + Marketing Site
+name: Terraform DigitalOcean
 
 on:
   push:
     branches: [ main ]
-  workflow_dispatch: {}
-
-env:
-  DIGITALOCEAN_TOKEN:  ${{ secrets.DO_TOKEN }}
-  TF_VAR_do_token:      ${{ secrets.DO_TOKEN }}
-
-  NAMESILO_API_KEY:     ${{ secrets.NAMESILO_API_KEY }}
-  NAMESILO_DOMAIN:      axialy.ai
+  workflow_dispatch:
 
 jobs:
-#───────────────────────────────────────────────────────────────────
-# 1)  Detect what changed
-#───────────────────────────────────────────────────────────────────
-  filter:
-    runs-on: ubuntu-latest
-    outputs:
-      site_changed: ${{ steps.paths.outputs.marketing }}
-
-    steps:
-      - name: 🛎️  Check out repo
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - id: paths
-        name: 📂 Detect changes under axialy-marketing-site/
-        uses: dorny/paths-filter@v3
-        with:
-          filters: |
-            marketing:
-              - 'axialy-marketing-site/**'
-          token: ${{ secrets.GITHUB_TOKEN }}
-          list-files: none
-          initial-fetch-depth: 100
-
-#───────────────────────────────────────────────────────────────────
-# 2)  Terraform + DNS
-#───────────────────────────────────────────────────────────────────
   terraform:
-    needs: filter
     runs-on: ubuntu-latest
-    outputs:
-      root_ip:  ${{ steps.ip.outputs.root }}
-      ui_ip:    ${{ steps.ip.outputs.ui }}
-      api_ip:   ${{ steps.ip.outputs.api }}
-      admin_ip: ${{ steps.ip.outputs.admin }}
+
+    env:
+      DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}   # <- use the secret you already have
+      TF_VAR_do_token:    ${{ secrets.DIGITALOCEAN_TOKEN }}   # <- same token for Terraform
+      NAMESILO_API_KEY:   ${{ secrets.NAMESILO_API_KEY }}
+      NAMESILO_DOMAIN:    axialy.ai
 
     steps:
-      - name: 🛎️  Check out repo
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # ── doctl ───────────────────────────────────────────────
-      - name: 📦 Install doctl
+      # install doctl
+      - name: Install doctl
         run: |
           set -e
-          VER=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest \
-                | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
-          curl -sL "https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz" \
-            | tar -xz
+          VER=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest |
+                grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
+          curl -sL "https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz" | tar -xz
           sudo mv doctl /usr/local/bin
-      - name: 🔑 Authenticate doctl
+
+      # authenticate
+      - name: Auth with DigitalOcean
         run: doctl auth init -t "$DIGITALOCEAN_TOKEN"
 
-      # ── Terraform ──────────────────────────────────────────
-      - name: 🛠️  Setup Terraform
+      # set up Terraform
+      - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.8.2
           cli_config_credentials_hostname: app.terraform.io
+          terraform_wrapper: true
 
-      - name: 🚀 terraform init
-        run: terraform -chdir=infra init -upgrade
-
-      - name: 🔄 Import any existing DO resources
-        run: bash infra/import_existing.sh
-
-      - name: 📝 terraform plan
-        run: terraform -chdir=infra plan -input=false
-
-      - name: ✅ terraform apply
-        run: terraform -chdir=infra apply -auto-approve -input=false
-
-      # ── Capture droplet IPs (map ➜ separate vars) ──────────
-      - name: 📦 Install jq
-        run: sudo apt-get update -y && sudo apt-get install -y jq
-
-      - id: ip
-        name: 🌐 Extract droplet IPs
-        shell: bash
+      # init, import, plan, apply …
+      - name: Terraform init / import / apply
         run: |
-          JSON=$(terraform -chdir=infra output -json droplet_ips)
-          echo "root=$(echo  "$JSON" | jq -r '.root')"  >> "$GITHUB_OUTPUT"
-          echo "ui=$(echo    "$JSON" | jq -r '.ui')"    >> "$GITHUB_OUTPUT"
-          echo "api=$(echo   "$JSON" | jq -r '.api')"   >> "$GITHUB_OUTPUT"
-          echo "admin=$(echo "$JSON" | jq -r '.admin')" >> "$GITHUB_OUTPUT"
+          set -eo pipefail
+          terraform -chdir=infra init -upgrade
+          bash infra/import_existing.sh
+          terraform -chdir=infra plan -input=false
+          terraform -chdir=infra apply -auto-approve -input=false
 
-      # ── Update DNS A records in NameSilo ───────────────────
-      - name: 🛠️  Update NameSilo DNS
-        env:
-          ROOT_IP:  ${{ steps.ip.outputs.root }}
-          UI_IP:    ${{ steps.ip.outputs.ui }}
-          API_IP:   ${{ steps.ip.outputs.api }}
-          ADMIN_IP: ${{ steps.ip.outputs.admin }}
+      # update DNS
+      - name: Update NameSilo DNS
         run: bash infra/update_namesilo.sh
-
-#───────────────────────────────────────────────────────────────────
-# 3)  Deploy marketing site if its source changed
-#───────────────────────────────────────────────────────────────────
-  deploy-marketing:
-    needs: [ filter, terraform ]
-    if: needs.filter.outputs.site_changed == 'true'
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: 🛎️  Check out repo
-        uses: actions/checkout@v4
-
-      - name: 📦 Install rsync & SSH
-        run: sudo apt-get update -y && sudo apt-get install -y rsync openssh-client
-
-      - name: 🔑 Load SSH key
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
-
-      - name: 🚚 Sync axialy-marketing-site → droplet
-        env:
-          HOST_IP: ${{ needs.terraform.outputs.root_ip }}
-        run: |
-          rsync -avz --delete axialy-marketing-site/ root@$HOST_IP:/var/www/html/
