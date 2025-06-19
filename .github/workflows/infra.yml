@@ -1,71 +1,81 @@
 name: Terraform DigitalOcean & Marketing-Site Deploy
-
 on:
   push:
     branches: [ "main" ]
 
+env:
+  DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+  TF_VAR_do_token:    ${{ secrets.DIGITALOCEAN_TOKEN }}
+  NAMESILO_API_KEY:   ${{ secrets.NAMESILO_API_KEY }}
+  NAMESILO_DOMAIN:    axialy.ai
+
 jobs:
 # ──────────────────────────────────────────────────────────
-# 1) Build / maintain infrastructure & DNS (unchanged)
+# 1) Build / keep infrastructure & DNS in sync
 # ──────────────────────────────────────────────────────────
   terraform:
     runs-on: ubuntu-latest
-    env:
-      DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
-      TF_VAR_do_token:    ${{ secrets.DIGITALOCEAN_TOKEN }}
-      NAMESILO_API_KEY:   ${{ secrets.NAMESILO_API_KEY }}
-      NAMESILO_DOMAIN:    axialy.ai
 
     outputs:
       root_ip:      ${{ steps.get_ips.outputs.root_ip }}
-      site_changed: ${{ steps.filter.outputs.marketing == 'true' }}
+      site_changed: ${{ steps.filter.outputs.marketing }}
 
     steps:
-    # Was the marketing site touched?
+    # 1. Checkout first so git commands work
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0           # full history for paths-filter
+
+    # 2. Did the commit touch the marketing-site folder?
     - id: filter
       uses: dorny/paths-filter@v3
       with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        list-files: none
         filters: |
           marketing:
             - 'axialy-marketing-site/**'
 
-    - uses: actions/checkout@v4
-
-    # doctl
+    # 3. Install doctl + authenticate
     - name: Install doctl
       run: |
         set -e
         VER=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest \
-                | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
+                 | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
         curl -sL "https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz" \
           | tar -xz
         sudo mv doctl /usr/local/bin
     - name: doctl auth
       run: doctl auth init -t "$DIGITALOCEAN_TOKEN"
 
-    # Terraform
+    # 4. Terraform
     - uses: hashicorp/setup-terraform@v3
       with:
         terraform_version: 1.8.2
+
     - name: Terraform init
       run: terraform -chdir=infra init -upgrade
-    - name: Import existing resources   # …unchanged import logic…
-      run: bash infra/import_existing.sh    # (<── the same shell block you already use)
+
+    - name: Import existing resources
+      run: bash infra/import_existing.sh
+
     - name: Terraform plan
       run: terraform -chdir=infra plan -input=false
+
     - name: Terraform apply
       run: terraform -chdir=infra apply -auto-approve -input=false
 
-    # Grab the root-site IP for the deploy job
+    # 5. Expose the root-site IP for the deploy job
     - id: get_ips
       run: echo "root_ip=$(terraform -chdir=infra output -raw droplet_ips.root)" >> "$GITHUB_OUTPUT"
 
-    # Update NameSilo DNS  (unchanged, still writes blank host for apex)
+    # 6. Update NameSilo DNS for all droplets
     - name: Update NameSilo DNS
       run: bash infra/update_namesilo.sh
 
 # ──────────────────────────────────────────────────────────
-# 2) Re-deploy axialy-marketing-site/  (runs only if changed)
+# 2) Re-deploy axialy-marketing-site/  (only if site files changed)
 # ──────────────────────────────────────────────────────────
   deploy_marketing_site:
     needs: terraform
@@ -73,13 +83,14 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DROPLET_IP:      ${{ needs.terraform.outputs.root_ip }}
-      SSH_PRIVATE_KEY: ${{ secrets.DROPLET_SSH_KEY }}   # one-time secret, see below
-      SSH_USER:        root                              # or “ubuntu”
+      SSH_PRIVATE_KEY: ${{ secrets.DROPLET_SSH_KEY }}
+      SSH_USER:        root          # or “ubuntu” if you prefer
 
     steps:
-    - uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
-    - name: Install rsync & ssh client
+    - name: Install rsync & ssh
       run: sudo apt-get update -y && sudo apt-get install -y rsync openssh-client
 
     - name: Configure SSH
@@ -89,17 +100,14 @@ jobs:
         chmod 600 ~/.ssh/id_rsa
         ssh-keyscan -H "$DROPLET_IP" >> ~/.ssh/known_hosts
 
-    # 1. Ensure Nginx is present & running (idempotent)
-    - name: Install / start Nginx on droplet
+    - name: Ensure Nginx is installed
       run: |
         ssh -o StrictHostKeyChecking=no "$SSH_USER@$DROPLET_IP" \
           'sudo apt-get update -y && sudo apt-get install -y nginx && sudo systemctl enable --now nginx'
 
-    # 2. Sync site files
     - name: Upload marketing site
       run: |
         rsync -avz --delete axialy-marketing-site/ "$SSH_USER@$DROPLET_IP:/var/www/html/"
 
-    # 3. Reload Nginx to pick up new files
     - name: Reload Nginx
       run: ssh "$SSH_USER@$DROPLET_IP" 'sudo systemctl reload nginx'
