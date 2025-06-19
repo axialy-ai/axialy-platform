@@ -1,4 +1,4 @@
-# GitHub Action – keeps DigitalOcean in sync on every push to main
+# GitHub Action – keeps DigitalOcean & NameSilo in sync on every push to main
 name: Terraform DigitalOcean
 
 on:
@@ -11,10 +11,14 @@ jobs:
     env:
       DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
       TF_VAR_do_token:    ${{ secrets.DIGITALOCEAN_TOKEN }}
+      NAMESILO_API_KEY:   ${{ secrets.NAMESILO_API_KEY }}
+      NAMESILO_DOMAIN:    axialy.ai
 
     steps:
+    # ── Checkout code ────────────────────────────────────────────────
     - uses: actions/checkout@v4
 
+    # ── Install doctl ────────────────────────────────────────────────
     - name: Install doctl
       run: |
         set -e
@@ -27,6 +31,7 @@ jobs:
     - name: doctl auth
       run: doctl auth init -t "$DIGITALOCEAN_TOKEN"
 
+    # ── Terraform CLI ────────────────────────────────────────────────
     - uses: hashicorp/setup-terraform@v3
       with:
         terraform_version: 1.8.2
@@ -34,44 +39,96 @@ jobs:
     - name: Terraform init
       run: terraform -chdir=infra init -upgrade
 
+    # ── Import existing DO resources (updated droplet list) ──────────
     - name: Import existing resources
       run: |
         set -eo pipefail
         cd infra
         state_has () { [ -f terraform.tfstate ] && terraform state list | grep -q "^$1$"; }
 
+        # Project
         PID=$(doctl projects list --format ID,Name --no-header | awk '$2=="Axialy"{print $1; exit}')
-        if [ -n "$PID" ] && ! state_has digitalocean_project.axialy; then
+        [ -n "$PID" ] && ! state_has digitalocean_project.axialy && \
           terraform import digitalocean_project.axialy "$PID"
-        fi
 
+        # DB cluster + DBs
         CID=$(doctl databases list --format ID,Name --no-header | awk '$2=="axialy-db-cluster"{print $1; exit}')
         if [ -n "$CID" ]; then
-          state_has digitalocean_database_cluster.mysql || terraform import digitalocean_database_cluster.mysql "$CID"
+          state_has digitalocean_database_cluster.mysql || \
+            terraform import digitalocean_database_cluster.mysql "$CID"
           declare -A DBS=( ["ui"]="Axialy_UI" ["admin"]="Axialy_Admin" )
           for RES in "${!DBS[@]}"; do
             DB="${DBS[$RES]}"
             if doctl databases db list "$CID" --format Name --no-header | grep -qw "$DB" \
-              && ! state_has "digitalocean_database_db.${RES}"
+               && ! state_has "digitalocean_database_db.${RES}"
             then
               terraform import "digitalocean_database_db.${RES}" "${CID},${DB}"
             fi
           done
         fi
 
-        # 👉 Updated map includes the new WWW droplet
-        declare -A DROPS=( ["ui"]="ui.axialy.ai" ["api"]="api.axialy.ai" ["admin"]="admin.axialy.ai" ["www"]="www.axialy.ai" )
+        # Droplets – includes new 'root' droplet (axialy.ai)
+        declare -A DROPS=(
+          ["ui"]="ui.axialy.ai"
+          ["api"]="api.axialy.ai"
+          ["admin"]="admin.axialy.ai"
+          ["root"]="axialy.ai"
+        )
         for RES in "${!DROPS[@]}"; do
           NAME="${DROPS[$RES]}"
-          DID=$(doctl compute droplet list --format ID,Name --no-header | awk -v n="$NAME" '$2==n{print $1; exit}')
+          DID=$(doctl compute droplet list --format ID,Name --no-header \
+                 | awk -v n="$NAME" '$2==n{print $1; exit}')
           if [ -n "$DID" ] && ! state_has "digitalocean_droplet.${RES}"; then
             terraform import "digitalocean_droplet.${RES}" "$DID"
           fi
         done
 
+    # ── Plan & apply ─────────────────────────────────────────────────
     - name: Terraform plan
       run: terraform -chdir=infra plan -input=false
 
     - name: Terraform apply
       if: github.ref == 'refs/heads/main'
       run: terraform -chdir=infra apply -auto-approve -input=false
+
+    # ── Update NameSilo DNS records ─────────────────────────────────
+    - name: Update NameSilo DNS
+      if: github.ref == 'refs/heads/main'
+      env:
+        DOMAIN: ${{ env.NAMESILO_DOMAIN }}
+      run: |
+        set -e
+
+        # -------------- helper functions -----------------
+        upsert () {
+          HOST=$1
+          IP=$2
+          KEY=$NAMESILO_API_KEY
+          DOMAIN=$NAMESILO_DOMAIN
+
+          # list existing records
+          LIST=$(curl -s "https://www.namesilo.com/api/dnsListRecords?version=1&type=json&key=${KEY}&domain=${DOMAIN}")
+          RRID=$(echo "$LIST" | jq -r ".namesilo.response.resource_record[] \
+                 | select(.type==\"A\" and (.host==\"${HOST}.${DOMAIN}\" or (.host==\"${DOMAIN}\" and \"${HOST}\"==\"@\"))) \
+                 | .record_id" | head -n 1)
+
+          if [ -n "$RRID" ]; then
+            curl -s "https://www.namesilo.com/api/dnsUpdateRecord?version=1&type=json&key=${KEY}&domain=${DOMAIN}&rrid=${RRID}&rrhost=${HOST}&rrvalue=${IP}&rrttl=3600" > /dev/null
+          else
+            curl -s "https://www.namesilo.com/api/dnsAddRecord?version=1&type=json&key=${KEY}&domain=${DOMAIN}&rrhost=${HOST}&rrvalue=${IP}&rrtype=A&rrttl=3600" > /dev/null
+          fi
+        }
+
+        # -------------- fetch droplet IPs ----------------
+        IPS=$(terraform -chdir=infra output -json droplet_ips)
+        ADMIN_IP=$(echo "$IPS" | jq -r '.admin')
+        UI_IP=$(echo "$IPS"    | jq -r '.ui')
+        API_IP=$(echo "$IPS"   | jq -r '.api')
+        ROOT_IP=$(echo "$IPS"  | jq -r '.root')
+
+        # -------------- update/insert --------------------
+        upsert "admin"   "$ADMIN_IP"
+        upsert "ui"      "$UI_IP"
+        upsert "api"     "$API_IP"
+        upsert "www"     "$ROOT_IP"
+        upsert "@"       "$ROOT_IP"
