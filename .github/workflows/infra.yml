@@ -1,4 +1,4 @@
-# GitHub Action ─ keeps DigitalOcean in sync on every push to main
+# GitHub Action – keeps DigitalOcean in sync on every push to main
 name: Terraform DigitalOcean
 
 on:
@@ -16,7 +16,7 @@ jobs:
     # 1️⃣  Code checkout
     - uses: actions/checkout@v4
 
-    # 2️⃣  doctl install (download binary → works on any Ubuntu runner)
+    # 2️⃣  doctl CLI
     - name: Install doctl
       run: |
         set -e
@@ -27,11 +27,11 @@ jobs:
         sudo mv doctl /usr/local/bin
         doctl version
 
-    # 3️⃣  Authenticate doctl
+    # 3️⃣  doctl login
     - name: doctl auth
       run: doctl auth init -t "$DIGITALOCEAN_TOKEN"
 
-    # 4️⃣  Terraform install
+    # 4️⃣  Terraform CLI
     - uses: hashicorp/setup-terraform@v3
       with:
         terraform_version: 1.8.2
@@ -40,28 +40,27 @@ jobs:
     - name: Terraform init
       run: terraform -chdir=infra init -upgrade
 
-    # 6️⃣  Safe import helper + auto-imports
+    # 6️⃣  Auto-import anything that already exists
     - name: Import existing resources
       run: |
         set -eo pipefail
         cd infra
 
-        # Helper: does the local state file know about RESOURCE?
         state_has () {
-          [ -f terraform.tfstate ] || return 1          # no state file yet
+          [ -f terraform.tfstate ] || return 1
           terraform state list | grep -q "^$1$"
         }
 
         # ── Project ───────────────────────────────
         PID=$(doctl projects list --format ID,Name --no-header \
-                | awk '$2=="Axialy"{print $1; exit}')
+               | awk '$2=="Axialy"{print $1; exit}')
         if [ -n "$PID" ] && ! state_has digitalocean_project.axialy; then
           terraform import digitalocean_project.axialy "$PID"
         fi
 
-        # ── Managed MySQL cluster + DBs ───────────
+        # ── MySQL cluster + DBs ───────────────────
         CID=$(doctl databases list --format ID,Name --no-header \
-                | awk '$2=="axialy-db-cluster"{print $1; exit}')
+               | awk '$2=="axialy-db-cluster"{print $1; exit}')
         if [ -n "$CID" ]; then
           state_has digitalocean_database_cluster.mysql || \
             terraform import digitalocean_database_cluster.mysql "$CID"
@@ -72,7 +71,8 @@ jobs:
             if doctl databases db list "$CID" --format Name --no-header | grep -qw "$DB" \
               && ! state_has "digitalocean_database_db.${RES}"
             then
-              terraform import "digitalocean_database_db.${RES}" "${CID}:${DB}"
+              # 👉 **FIXED**: correct delimiter is a comma, not a colon
+              terraform import "digitalocean_database_db.${RES}" "${CID},${DB}"
             fi
           done
         fi
@@ -82,7 +82,7 @@ jobs:
         for RES in "${!DROPS[@]}"; do
           NAME="${DROPS[$RES]}"
           DID=$(doctl compute droplet list --format ID,Name --no-header \
-                  | awk -v n="$NAME" '$2==n{print $1; exit}')
+                 | awk -v n="$NAME" '$2==n{print $1; exit}')
           if [ -n "$DID" ] && ! state_has "digitalocean_droplet.${RES}"; then
             terraform import "digitalocean_droplet.${RES}" "$DID"
           fi
