@@ -1,45 +1,46 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ── Config from GitHub-Actions secrets ───────────────────────────────
+# ── Secrets injected by GitHub Actions ───────────────────────────────
 KEY="${NAMESILO_API_KEY:?Missing NAMESILO_API_KEY}"
 DOMAIN="${NAMESILO_DOMAIN:?Missing NAMESILO_DOMAIN}"
 
 #
-# upsert HOST  IP
-#   • HOST == ""  → apex record (root, “@”)
-#   • HOST == "ui" / "api" / "admin" / "www" etc.
+# clean_and_add HOST  IP
 #
-upsert () {
+#   HOST == ""   → apex (@)
+#   HOST == "www" / "api" / "ui" / "admin"
+#
+clean_and_add () {
   local HOST="$1" IP="$2"
 
-  # Apex appears as either "axialy.ai" or "@"
+  # Build a jq expression that matches *all* possible host spellings
   local FILTER
-  if [[ -z "$HOST" ]]; then
-    FILTER='(.host=="'"$DOMAIN"'" or .host=="@")'
-  else
-    FILTER='.host=="'"$HOST.$DOMAIN"'"'
+  if [[ -z "$HOST" ]]; then            # apex record
+    FILTER='.host=="@" or .host=="'"$DOMAIN"'"'
+  else                                  # sub-host (www, api, …)
+    FILTER='.host=="'"$HOST"'" or .host=="'"$HOST.$DOMAIN"'"'
   fi
 
-  # 1️⃣  List current A-records for that host
+  # 1️⃣  List & collect record-ids we want to delete
   local IDS
   IDS=$(curl -s "https://www.namesilo.com/api/dnsListRecords?version=1&type=json&key=${KEY}&domain=${DOMAIN}" |
         jq -r '.namesilo.response.resource_record[]
-               | select(.type=="A" and '"$FILTER"')
+               | select(.type=="A" and ('"$FILTER"'))
                | .record_id')
 
-  # 2️⃣  Delete every matching record (if any)
+  # 2️⃣  Delete every matching record
   for ID in $IDS; do
     curl -s "https://www.namesilo.com/api/dnsDeleteRecord?version=1&type=json&key=${KEY}&domain=${DOMAIN}&rrid=${ID}" \
       >/dev/null
   done
 
-  # 3️⃣  Wait until API shows zero remaining records (≤ 5 s)
+  # 3️⃣  Wait (<=5 s) until the API shows zero remaining matches
   for _ in {1..10}; do
     local LEFT
     LEFT=$(curl -s "https://www.namesilo.com/api/dnsListRecords?version=1&type=json&key=${KEY}&domain=${DOMAIN}" |
             jq -r '[.namesilo.response.resource_record[]
-                    | select(.type=="A" and '"$FILTER"')] | length')
+                    | select(.type=="A" and ('"$FILTER"'))] | length')
     [[ "$LEFT" == 0 ]] && break
     sleep 0.5
   done
@@ -51,7 +52,7 @@ upsert () {
     >/dev/null
 }
 
-# ── Pull droplet IPs from Terraform outputs -------------------------
+# ── Fetch fresh droplet IPs from Terraform ------------------------------------
 IPS=$(terraform -chdir=infra output -json droplet_ips)
 
 ADMIN_IP=$(echo "$IPS" | jq -r '.admin')
@@ -59,11 +60,11 @@ UI_IP=$(echo   "$IPS" | jq -r '.ui')
 API_IP=$(echo  "$IPS" | jq -r '.api')
 ROOT_IP=$(echo "$IPS" | jq -r '.root')
 
-# ── Enforce “single-record” policy for every host -------------------
-upsert "admin" "$ADMIN_IP"
-upsert "ui"    "$UI_IP"
-upsert "api"   "$API_IP"
-upsert "www"   "$ROOT_IP"
-upsert ""      "$ROOT_IP"   # apex / @
+# ── Enforce “one record per host” --------------------------------------------
+clean_and_add "admin" "$ADMIN_IP"
+clean_and_add "ui"    "$UI_IP"
+clean_and_add "api"   "$API_IP"
+clean_and_add "www"   "$ROOT_IP"
+clean_and_add ""      "$ROOT_IP"   # apex/@
 
-echo "✅  DNS for ${DOMAIN} now has exactly one A-record per host."
+echo "✅  NameSilo now holds exactly one A-record per host (no stale IPs)."
