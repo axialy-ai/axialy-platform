@@ -1,68 +1,39 @@
 #!/usr/bin/env bash
-# ---------------------------------------------------------------------------
-# update_namesilo.sh – keep NameSilo DNS in perfect sync with Terraform outputs
-# ---------------------------------------------------------------------------
-set -euo pipefail
+set -Eeuo pipefail
 
-KEY="${NAMESILO_API_KEY:?Missing NAMESILO_API_KEY}"
-DOMAIN="${NAMESILO_DOMAIN:?Missing NAMESILO_DOMAIN}"
+DOMAIN="${NAMESILO_DOMAIN:?missing}"
+KEY="${NAMESILO_API_KEY:?missing}"
 
-# ---- list current A-records ------------------------------------------------
-list_records () {
-  curl -s \
-    "https://www.namesilo.com/api/dnsListRecords?version=1&type=json&key=${KEY}&domain=${DOMAIN}" |
-    jq -r '.namesilo.response.resource_record[] |
-           select(.type=="A") |
-           { host, ip: .value, id: .record_id }'
-}
-
-# ---- helpers ---------------------------------------------------------------
-delete_record () { curl -s \
-  "https://www.namesilo.com/api/dnsDeleteRecord?version=1&type=json&key=${KEY}&domain=${DOMAIN}&rrid=$1" >/dev/null; }
-
-add_record () {
-  local RRHOST="$1" IP="$2"
-  local HOST_PARAM; [[ -z "$RRHOST" ]] && HOST_PARAM="" || HOST_PARAM="rrhost=${RRHOST}&"
-  curl -s \
-    "https://www.namesilo.com/api/dnsAddRecord?version=1&type=json&key=${KEY}&domain=${DOMAIN}&${HOST_PARAM}rrvalue=${IP}&rrtype=A&rrttl=3600" \
-    >/dev/null
-}
-
-# ---- ensure exactly ONE record per host/IP ---------------------------------
-upsert () {
-  local RRHOST="$1" NEW_IP="$2" SKIP_ADD=0
-  local FILTER; [[ -z "$RRHOST" ]] && FILTER='(.host=="'"$DOMAIN"'" or .host=="@")' \
-                                   || FILTER='.host=="'"$RRHOST.$DOMAIN"'"'
-
-  list_records | jq -rc "select(${FILTER})" | while read -r rec; do
-    local CURR_ID CURR_IP
-    CURR_ID=$(jq -r '.id' <<<"$rec")
-    CURR_IP=$(jq -r '.ip' <<<"$rec")
-    [[ "$CURR_IP" == "$NEW_IP" ]] && SKIP_ADD=1 || delete_record "$CURR_ID"
-  done
-
-  [[ $SKIP_ADD -eq 0 ]] && add_record "$RRHOST" "$NEW_IP"
-}
-
-# ---- desired state from Terraform -----------------------------------------
-IPS_JSON=$(terraform -chdir=infra output -json droplet_ips)
-declare -A WANT=(
-  [admin]="$(echo "$IPS_JSON" | jq -r '.admin')"
-  [ui]="$(   echo "$IPS_JSON" | jq -r '.ui')"
-  [api]="$(  echo "$IPS_JSON" | jq -r '.api')"
-  [www]="$(  echo "$IPS_JSON" | jq -r '.root')"
-  [root]="$( echo "$IPS_JSON" | jq -r '.root')"
+declare -A HOST2IP=(
+  [@]="$ROOT_IP"
+  [ui]="$UI_IP"
+  [api]="$API_IP"
+  [admin]="$ADMIN_IP"
 )
 
-for h in "${!WANT[@]}"; do
-  [[ -z ${WANT[$h]} || ${WANT[$h]} == "null" ]] && { echo "Missing IP for $h"; exit 1; }
+records_json="$(curl -fsSL \
+  "https://www.namesilo.com/api/dnsListRecords?version=1&type=json&key=${KEY}&domain=${DOMAIN}")"
+
+# optional one-off debug dump
+# echo "$records_json" | jq .
+
+for host in "${!HOST2IP[@]}"; do
+  ip="${HOST2IP[$host]}"
+
+  record_id="$(echo "$records_json" |
+      jq -r --arg h "$host.${DOMAIN}" '
+          .namesilo.reply.resource_record? // []
+          | map(select(.host == $h))        | .[0].record_id // empty')"
+
+  if [[ -n "$record_id" ]]; then
+    echo "Updating $host -> $ip (rrid=$record_id)"
+    curl -fsSL \
+      "https://www.namesilo.com/api/dnsUpdateRecord?version=1&type=json&key=${KEY}&domain=${DOMAIN}&rrid=${record_id}&rrhost=${host}&rrvalue=${ip}&rrttl=3600" \
+      >/dev/null
+  else
+    echo "Adding $host -> $ip"
+    curl -fsSL \
+      "https://www.namesilo.com/api/dnsAddRecord?version=1&type=json&key=${KEY}&domain=${DOMAIN}&rrtype=A&rrhost=${host}&rrvalue=${ip}&rrttl=3600" \
+      >/dev/null
+  fi
 done
-
-# ---- reconcile -------------------------------------------------------------
-upsert "admin" "${WANT[admin]}"
-upsert "ui"    "${WANT[ui]}"
-upsert "api"   "${WANT[api]}"
-upsert "www"   "${WANT[www]}"
-upsert ""      "${WANT[root]}"   # apex
-
-echo "✔  NameSilo DNS now matches Terraform outputs."
