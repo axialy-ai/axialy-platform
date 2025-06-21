@@ -16,10 +16,14 @@ jobs:
       DROPLET_SSH_KEY:    ${{ secrets.DROPLET_SSH_KEY }}
 
     steps:
-    # 1) Checkout code
+    # 1) Checkout code --------------------------------------------------------
     - uses: actions/checkout@v4
 
-    # 2) Detect whether the marketing site changed
+    # 2) Ensure helper scripts are executable ---------------------------------
+    - name: Make helper scripts executable
+      run: chmod +x infra/*.sh
+
+    # 3) Detect whether the marketing site changed ----------------------------
     - id: filter
       uses: dorny/paths-filter@v3
       with:
@@ -29,20 +33,20 @@ jobs:
           marketing:
             - 'axialy-marketing-site/**'
 
-    # 3) Install doctl & authenticate
+    # 4) Install doctl & authenticate -----------------------------------------
     - name: Install doctl
       run: |
         set -e
-        VER=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest |
-                grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
-        curl -sL "https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz" |
-          tar -xz
+        VER=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest \
+               | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
+        curl -sL "https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz" \
+          | tar -xz
         sudo mv doctl /usr/local/bin
 
     - name: doctl auth
       run: doctl auth init -t "$DIGITALOCEAN_TOKEN"
 
-    # 4) Terraform CLI
+    # 5) Terraform CLI --------------------------------------------------------
     - uses: hashicorp/setup-terraform@v3
       with:
         terraform_version: 1.8.2
@@ -50,11 +54,11 @@ jobs:
     - name: Terraform init
       run: terraform -chdir=infra init -upgrade
 
-    # 5) Import existing DigitalOcean resources
+    # 6) Import existing DigitalOcean resources -------------------------------
     - name: Import existing resources
-      run: infra/import_existing.sh
+      run: bash infra/import_existing.sh
 
-    # 6) Plan & apply (main only)
+    # 7) Plan & apply (main only) ---------------------------------------------
     - name: Terraform plan
       run: terraform -chdir=infra plan -input=false
 
@@ -62,7 +66,7 @@ jobs:
       if: github.ref == 'refs/heads/main'
       run: terraform -chdir=infra apply -auto-approve -input=false
 
-    # 7) Expose droplet IPs to later steps
+    # 8) Expose droplet IPs to later steps ------------------------------------
     - id: ips
       run: |
         IPS=$(terraform -chdir=infra output -json droplet_ips)
@@ -71,15 +75,12 @@ jobs:
         echo "API_IP=$(   echo "$IPS" | jq -r '.api')"   >> "$GITHUB_ENV"
         echo "ADMIN_IP=$( echo "$IPS" | jq -r '.admin')" >> "$GITHUB_ENV"
 
-    # 8) **Call the external script to reconcile NameSilo DNS**
+    # 9) Update NameSilo DNS ---------------------------------------------------
     - name: Update NameSilo DNS
       if: github.ref == 'refs/heads/main'
-      run: infra/update_namesilo.sh
-      env:
-        NAMESILO_API_KEY: ${{ secrets.NAMESILO_API_KEY }}
-        NAMESILO_DOMAIN:  ${{ env.NAMESILO_DOMAIN }}
+      run: bash infra/update_namesilo.sh
 
-    # 9) Deploy marketing site when it changed
+    # 10) Deploy marketing site when it changed -------------------------------
     - name: Deploy axialy-marketing-site to root droplet
       if: steps.filter.outputs.marketing == 'true'
       uses: appleboy/scp-action@v0.1.5
