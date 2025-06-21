@@ -1,75 +1,72 @@
 #!/usr/bin/env bash
-# ---------------------------------------------------------------------------
-# Update (or create) the exact A-records we need, deleting *all* stale ones.
-# ---------------------------------------------------------------------------
 set -euo pipefail
 
-KEY="$NAMESILO_API_KEY"
-DOMAIN="$NAMESILO_DOMAIN"
-TTL=3600
+# ── Config pulled from GitHub-Actions env ────────────────────────────
+KEY="${NAMESILO_API_KEY:?Missing NAMESILO_API_KEY}"
+DOMAIN="${NAMESILO_DOMAIN:?Missing NAMESILO_DOMAIN}"
 
-api() {
-  local endpoint="$1"; shift
-  curl -s "https://www.namesilo.com/api/${endpoint}?version=1&type=json&key=${KEY}&domain=${DOMAIN}&$*"
-}
-
-# ---------- delete EVERY existing A-record for a host ----------
-purge_host() {
-  local RRHOST="$1"              # "" == apex
-  echo "▶ Purging host '${RRHOST:-<apex>}' …"
-
-  # Pull list → grab all matching record_ids
-  local RRIDS
-  RRIDS=$(api dnsListRecords | jq -r \
-    --arg h "$RRHOST" --arg d "$DOMAIN" '
-      .namesilo.response.resource_record[]
-      | select(.type=="A"
-               and ( ($h=="" and .host==$d)                       # apex
-                     or (.host==$h+"."+$d) ) )                    # sub-host
-      | .record_id')
-
-  if [[ -z "$RRIDS" ]]; then
-    echo "   ↳ nothing to delete"
-    return
-  fi
-
-  # Delete each record id
-  while IFS= read -r rrid; do
-    echo "   ↳ deleting rrid=$rrid"
-    api dnsDeleteRecord "rrid=${rrid}" > /dev/null
-  done <<< "$RRIDS"
-}
-
-# ---------- add a single new A-record ----------
-add_record() {
+# ── Helper: keep *exactly one* A-record for a host -------------------
+#   $1 = rrhost  ("" for apex)
+#   $2 = IPv4 address
+upsert () {
   local RRHOST="$1" IP="$2"
-  echo "▶ Adding host '${RRHOST:-<apex>}' -> $IP"
+
+  # Apex can appear as "axialy.ai" *or* blank ("@")
+  local JQ_FILTER
   if [[ -z "$RRHOST" ]]; then
-    api dnsAddRecord "rrvalue=${IP}&rrtype=A&rrttl=${TTL}" > /dev/null
+    JQ_FILTER='(.host=="'"$DOMAIN"'" or .host=="@")'
   else
-    api dnsAddRecord "rrhost=${RRHOST}&rrvalue=${IP}&rrtype=A&rrttl=${TTL}" > /dev/null
+    JQ_FILTER='.host=="'"$RRHOST.$DOMAIN"'"'
   fi
+
+  # 1️⃣  List current A-records for that host
+  local IDS
+  IDS=$(curl -s "https://www.namesilo.com/api/dnsListRecords?version=1&type=json&key=${KEY}&domain=${DOMAIN}" |
+        jq -r '.namesilo.response.resource_record[]
+               | select(.type=="A" and '"$JQ_FILTER"')
+               | .record_id')
+
+  # 2️⃣  Delete them (if any)
+  for ID in $IDS; do
+    curl -s "https://www.namesilo.com/api/dnsDeleteRecord?version=1&type=json&key=${KEY}&domain=${DOMAIN}&rrid=${ID}" \
+      >/dev/null
+  done
+
+  # 3️⃣  Wait until they’re really gone (≤ 5 s)
+  for _ in {1..10}; do
+    local LEFT
+    LEFT=$(curl -s "https://www.namesilo.com/api/dnsListRecords?version=1&type=json&key=${KEY}&domain=${DOMAIN}" |
+            jq -r '[.namesilo.response.resource_record[]
+                    | select(.type=="A" and '"$JQ_FILTER"')] | length')
+    [[ "$LEFT" == 0 ]] && break
+    sleep 0.5
+  done
+
+  # 4️⃣  Add the single, correct record
+  local HOST_PARAM
+  if [[ -z "$RRHOST" ]]; then
+    HOST_PARAM=""                # apex: rrhost left blank
+  else
+    HOST_PARAM="rrhost=${RRHOST}&"
+  fi
+
+  curl -s "https://www.namesilo.com/api/dnsAddRecord?version=1&type=json&key=${KEY}&domain=${DOMAIN}&${HOST_PARAM}rrvalue=${IP}&rrtype=A&rrttl=3600" \
+    >/dev/null
 }
 
-# ---------- fetch droplet IPs from Terraform output ----------
-IPS=$(terraform -chdir=infra output -json droplet_ips)
-ADMIN_IP=$(jq -r '.admin' <<< "$IPS")
-UI_IP=$(jq -r '.ui'    <<< "$IPS")
-API_IP=$(jq -r '.api'   <<< "$IPS")
-ROOT_IP=$(jq -r '.root' <<< "$IPS")
+# ── Fetch droplet IPs from Terraform outputs ------------------------
+IPS_JSON=$(terraform -chdir=infra output -json droplet_ips)
 
-# ---------- one-shot purge-then-add for each host ----------
-for host in "" www api ui admin; do
-  case $host in
-    "")    NEW_IP="$ROOT_IP"   ;;
-    www)   NEW_IP="$ROOT_IP"   ;;  # same IP as apex
-    api)   NEW_IP="$API_IP"    ;;
-    ui)    NEW_IP="$UI_IP"     ;;
-    admin) NEW_IP="$ADMIN_IP"  ;;
-  esac
+ADMIN_IP=$(echo "$IPS_JSON" | jq -r '.admin')
+UI_IP=$(echo   "$IPS_JSON" | jq -r '.ui')
+API_IP=$(echo  "$IPS_JSON" | jq -r '.api')
+ROOT_IP=$(echo "$IPS_JSON" | jq -r '.root')
 
-  purge_host "$host"
-  add_record "$host" "$NEW_IP"
-done
+# ── Upsert all required records -------------------------------------
+upsert "admin" "$ADMIN_IP"
+upsert "ui"    "$UI_IP"
+upsert "api"   "$API_IP"
+upsert "www"   "$ROOT_IP"
+upsert ""      "$ROOT_IP"   # apex / root record
 
-echo "✅ NameSilo DNS now has exactly the records we expect."
+echo "✅  DNS records for ${DOMAIN} are up-to-date."
