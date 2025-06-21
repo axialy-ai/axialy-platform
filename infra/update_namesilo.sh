@@ -1,67 +1,62 @@
 #!/usr/bin/env bash
-#
-# update_namesilo.sh  —  “one record per host” enforcement
-#
-#  ▸ deletes *all* existing A-records that belong to a host
-#  ▸ adds one fresh A-record with the live IP
-#
-#  Host parameter:
-#     ""      → apex (@)
-#     "www"   → www.axialy.ai
-#     "api"   → api.axialy.ai     …etc.
-#
 set -euo pipefail
 
-# ── Secrets from GitHub Actions ──────────────────────────────────────
-KEY="${NAMESILO_API_KEY:?Missing NAMESILO_API_KEY}"
-DOMAIN="${NAMESILO_DOMAIN:?Missing NAMESILO_DOMAIN}"
+KEY="${NAMESILO_API_KEY:?}"
+DOMAIN="${NAMESILO_DOMAIN:?}"
 
-# --------------------------------------------------------------------
-ns_api() { curl -sS "$@"; }              # wrapper for quiet curl
+# Desired final state – label → IP
+IPS=$(terraform -chdir=infra output -json droplet_ips)
+declare -A WANT=(
+  [""]=   "$(jq -r '.root'  <<<"$IPS")"   # apex '@'
+  ["www"]="$(jq -r '.root'  <<<"$IPS")"
+  ["api"]="$(jq -r '.api'   <<<"$IPS")"
+  ["ui"]="$(jq  -r '.ui'    <<<"$IPS")"
+  ["admin"]="$(jq -r '.admin'<<<"$IPS")"
+)
 
-purge_and_add() {                       # purge_and_add HOST IP
-  local HOST="$1" IP="$2"
+ns_api() { curl -sS "$@"; }
 
-  # ---- Build match expression that covers both host variants -------
-  local JQ_MATCH
-  if [[ -z "$HOST" ]]; then             # apex
-    JQ_MATCH='.host=="@" or .host=="'"$DOMAIN"'"'
-  else                                  # sub-host
-    JQ_MATCH='.host=="'"$HOST"'" or .host=="'"$HOST.$DOMAIN"'"'
-  fi
+# ------------------------------------------------------------------
+echo "▶ Listing current records …"
+JSON=$(ns_api "https://www.namesilo.com/api/dnsListRecords?version=1&type=json&key=${KEY}&domain=${DOMAIN}")
 
-  # ---- Collect *ALL* A-record IDs for this host --------------------
-  mapfile -t IDS < <(
-    ns_api "https://www.namesilo.com/api/dnsListRecords?version=1&type=json&key=${KEY}&domain=${DOMAIN}" |
-    jq -r '.namesilo.response.resource_record[]
-           | select(.type=="A" and ('"$JQ_MATCH"')) | .record_id'
-  )
+# Build list: id host ip
+mapfile -t REC < <(
+  echo "$JSON" |
+  jq -r '.namesilo.response.resource_record[]
+         | select(.type=="A")
+         | [.record_id, .host, .value] | @tsv')
 
-  # ---- Delete them one by one --------------------------------------
-  for ID in "${IDS[@]}"; do
+# ------------------------------------------------------------------
+echo "▶ Purging stale A-records …"
+for LINE in "${REC[@]}"; do
+  IFS=$'\t' read -r ID HOST VALUE <<<"$LINE"
+
+  # Convert full host → label used in WANT ("", www, api …)
+  if [[ "$HOST" == "$DOMAIN" ]];       then LABEL="";
+  elif [[ "$HOST" == *".${DOMAIN}" ]]; then LABEL="${HOST%%.${DOMAIN}}";
+  else                                       continue; fi # not ours
+
+  if [[ -n "${WANT[$LABEL]+x}" && "${WANT[$LABEL]}" == "$VALUE" ]]; then
+    # correct record → keep
+    unset "WANT[$LABEL]"              # mark as already present
+  else
+    # stale or duplicate → delete
+    echo "  • deleting [$HOST] $VALUE"
     ns_api "https://www.namesilo.com/api/dnsDeleteRecord?version=1&type=json&key=${KEY}&domain=${DOMAIN}&rrid=${ID}" \
       >/dev/null
-  done
+  fi
+done
 
-  # ---- Add the lone, correct record --------------------------------
-  local HOST_ARG=""
-  [[ -n "$HOST" ]] && HOST_ARG="rrhost=${HOST}&"
-  ns_api "https://www.namesilo.com/api/dnsAddRecord?version=1&type=json&key=${KEY}&domain=${DOMAIN}&${HOST_ARG}rrvalue=${IP}&rrtype=A&rrttl=3600" \
+# ------------------------------------------------------------------
+echo "▶ Adding missing A-records …"
+for LABEL in "${!WANT[@]}"; do
+  IP="${WANT[$LABEL]}"
+  HOSTARG=""
+  [[ -n "$LABEL" ]] && HOSTARG="rrhost=${LABEL}&"
+  echo "  • adding [${LABEL:-@}] $IP"
+  ns_api "https://www.namesilo.com/api/dnsAddRecord?version=1&type=json&key=${KEY}&domain=${DOMAIN}&${HOSTARG}rrvalue=${IP}&rrtype=A&rrttl=3600" \
     >/dev/null
-}
+done
 
-# ── Current droplet IPs from Terraform output -----------------------
-IPS=$(terraform -chdir=infra output -json droplet_ips)
-ADMIN_IP=$(jq -r '.admin' <<<"$IPS")
-UI_IP=$(jq    -r '.ui'    <<<"$IPS")
-API_IP=$(jq   -r '.api'   <<<"$IPS")
-ROOT_IP=$(jq  -r '.root'  <<<"$IPS")
-
-# ── Enforce “exactly one record per host” ---------------------------
-purge_and_add "admin" "$ADMIN_IP"
-purge_and_add "ui"    "$UI_IP"
-purge_and_add "api"   "$API_IP"
-purge_and_add "www"   "$ROOT_IP"
-purge_and_add ""      "$ROOT_IP"   # apex (@)
-
-echo "✅  NameSilo A-records are now clean: one per host, no stale IPs."
+echo "✅ DNS is now exactly one A-record per managed host."
