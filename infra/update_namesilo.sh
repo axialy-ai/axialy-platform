@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ── Config pulled from GitHub-Actions env ────────────────────────────
+# ── Config pulled from GitHub-Actions env ───────────────────────────────────────
 KEY="${NAMESILO_API_KEY:?Missing NAMESILO_API_KEY}"
 DOMAIN="${NAMESILO_DOMAIN:?Missing NAMESILO_DOMAIN}"
 
-# ── Helper: keep *exactly one* A-record for a host -------------------
-#   $1 = rrhost  ("" for apex)
+# ── Helper: keep *exactly one* A-record for a host -----------------------------
+#   $1 = rrhost  ("" for apex/@)
 #   $2 = IPv4 address
 upsert () {
   local RRHOST="$1" IP="$2"
@@ -19,33 +19,33 @@ upsert () {
     JQ_FILTER='.host=="'"$RRHOST.$DOMAIN"'"'
   fi
 
-  # 1️⃣  List current A-records for that host
+  # 1⃣  List current A-records for that host
   local IDS
   IDS=$(curl -s "https://www.namesilo.com/api/dnsListRecords?version=1&type=json&key=${KEY}&domain=${DOMAIN}" |
-        jq -r '.namesilo.response.resource_record[]
+        jq -r '.namesilo.reply.resource_record[]?                       # ← fixed path
                | select(.type=="A" and '"$JQ_FILTER"')
                | .record_id')
 
-  # 2️⃣  Delete them (if any)
+  # 2⃣  Delete them (if any)
   for ID in $IDS; do
     curl -s "https://www.namesilo.com/api/dnsDeleteRecord?version=1&type=json&key=${KEY}&domain=${DOMAIN}&rrid=${ID}" \
       >/dev/null
   done
 
-  # 3️⃣  Wait until they’re really gone (≤ 5 s)
+  # 3⃣  Wait until they’re really gone (≤ 5 s)
   for _ in {1..10}; do
     local LEFT
     LEFT=$(curl -s "https://www.namesilo.com/api/dnsListRecords?version=1&type=json&key=${KEY}&domain=${DOMAIN}" |
-            jq -r '[.namesilo.response.resource_record[]
+            jq -r '[.namesilo.reply.resource_record[]?                  # ← fixed path
                     | select(.type=="A" and '"$JQ_FILTER"')] | length')
     [[ "$LEFT" == 0 ]] && break
     sleep 0.5
   done
 
-  # 4️⃣  Add the single, correct record
+  # 4⃣  Add the single, correct record
   local HOST_PARAM
   if [[ -z "$RRHOST" ]]; then
-    HOST_PARAM=""                # apex: rrhost left blank
+    HOST_PARAM=""               # apex: rrhost left blank
   else
     HOST_PARAM="rrhost=${RRHOST}&"
   fi
@@ -54,7 +54,7 @@ upsert () {
     >/dev/null
 }
 
-# ── Fetch droplet IPs from Terraform outputs ------------------------
+# ── Fetch droplet IPs from Terraform outputs -----------------------------------
 IPS_JSON=$(terraform -chdir=infra output -json droplet_ips)
 
 ADMIN_IP=$(echo "$IPS_JSON" | jq -r '.admin')
@@ -62,7 +62,7 @@ UI_IP=$(echo   "$IPS_JSON" | jq -r '.ui')
 API_IP=$(echo  "$IPS_JSON" | jq -r '.api')
 ROOT_IP=$(echo "$IPS_JSON" | jq -r '.root')
 
-# ── Upsert all required records -------------------------------------
+# ── Upsert all required records ------------------------------------------------
 upsert "admin" "$ADMIN_IP"
 upsert "ui"    "$UI_IP"
 upsert "api"   "$API_IP"
