@@ -1,2 +1,2 @@
 # axialy-platform
-## Test G1
+## Test G2
