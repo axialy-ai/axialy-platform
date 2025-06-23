@@ -1,4 +1,3 @@
-# .github/workflows/infra.yml   ← REPLACE the whole file
 name: Terraform DigitalOcean
 
 on:
@@ -16,17 +15,18 @@ jobs:
       DROPLET_SSH_KEY:    ${{ secrets.DROPLET_SSH_KEY }}
 
     steps:
-    # 1) Checkout repo
+
+    # 1 – Checkout
     - uses: actions/checkout@v4
 
-    # 2) Remove any stale local artefacts (state / lock / plugin cache)
+    # 2 – Wipe any local artefacts that could resurrect old providers
     - name: Remove stale Terraform artefacts
       run: |
         rm -f infra/terraform.tfstate*
         rm -f infra/.terraform.lock.hcl
         rm -rf infra/.terraform
 
-    # 3) Detect marketing-site changes
+    # 3 – Detect marketing-site changes
     - id: filter
       uses: dorny/paths-filter@v3
       with:
@@ -36,7 +36,7 @@ jobs:
           marketing:
             - 'axialy-marketing-site/**'
 
-    # 4) Install doctl & authenticate
+    # 4 – Install doctl & authenticate
     - name: Install doctl
       run: |
         set -e
@@ -49,7 +49,7 @@ jobs:
     - name: doctl auth
       run: doctl auth init -t "$DIGITALOCEAN_TOKEN"
 
-    # 5) Terraform CLI
+    # 5 – Terraform CLI
     - uses: hashicorp/setup-terraform@v3
       with:
         terraform_version: 1.8.2
@@ -57,18 +57,18 @@ jobs:
     - name: Terraform init
       run: terraform -chdir=infra init -upgrade
 
-    # 6) Import any existing DigitalOcean resources into state
+    # 6 – Import any existing DigitalOcean resources
     - name: Import existing resources
       run: bash infra/import_existing.sh
 
-    # 7) Purge DNS A-records **only** for droplets that are currently missing
-    - name: Purge stale NameSilo A-records (for soon-to-be-created droplets)
+    # 7 – Purge DNS A-records for droplets that are *missing* (gives prop time)
+    - name: Purge stale NameSilo A-records
       env:
         NAMESILO_API_KEY: ${{ env.NAMESILO_API_KEY }}
         NAMESILO_DOMAIN:  ${{ env.NAMESILO_DOMAIN }}
       run: bash infra/purge_namesilo_missing.sh
 
-    # 8) Plan & apply
+    # 8 – Plan & apply
     - name: Terraform plan
       run: terraform -chdir=infra plan -input=false
 
@@ -76,7 +76,7 @@ jobs:
       if: github.ref == 'refs/heads/main'
       run: terraform -chdir=infra apply -auto-approve -input=false
 
-    # 9) Expose droplet IPs for later steps
+    # 9 – Expose droplet IPs
     - id: ips
       run: |
         IPS=$(terraform -chdir=infra output -json droplet_ips)
@@ -85,7 +85,7 @@ jobs:
         echo "API_IP=$(   echo "$IPS" | jq -r '.api')"   >> "$GITHUB_ENV"
         echo "ADMIN_IP=$( echo "$IPS" | jq -r '.admin')" >> "$GITHUB_ENV"
 
-    # 10) Update NameSilo DNS – now add the single, correct A-record per host
+    # 10 – Add the single, correct DNS records
     - name: Update NameSilo DNS
       if: github.ref == 'refs/heads/main'
       env:
@@ -93,7 +93,7 @@ jobs:
         NAMESILO_DOMAIN:  ${{ env.NAMESILO_DOMAIN }}
       run: bash infra/update_namesilo.sh
 
-    # 11) Deploy marketing site when it changed
+    # 11 – Deploy marketing site if it changed
     - name: Deploy axialy-marketing-site to root droplet
       if: steps.filter.outputs.marketing == 'true'
       uses: appleboy/scp-action@v0.1.5
