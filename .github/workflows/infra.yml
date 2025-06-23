@@ -1,88 +1,29 @@
-name: Axialy Infra (DO + NameSilo)
+# GitHub Action – provisions DigitalOcean + NameSilo on every push to main
+name: Terraform DigitalOcean
 
 on:
   push:
     branches: [ "main" ]
 
-env:                                  # available to every step
-  DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
-  TF_VAR_do_token:    ${{ secrets.DIGITALOCEAN_TOKEN }}
-  TF_VAR_ns_key:      ${{ secrets.NAMESILO_API_KEY }}
-  TF_VAR_ns_domain:   axialy.ai
-  DROPLET_SSH_KEY:    ${{ secrets.DROPLET_SSH_KEY }}
-
 jobs:
   terraform:
     runs-on: ubuntu-latest
 
+    env:
+      DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+      TF_VAR_do_token:    ${{ secrets.DIGITALOCEAN_TOKEN }}
+
+      TF_VAR_ns_key:      ${{ secrets.NAMESILO_API_KEY }}
+      TF_VAR_ns_domain:   axialy.ai
+
+      DROPLET_SSH_KEY:    ${{ secrets.DROPLET_SSH_KEY }}
+
     steps:
-    # ── 1  Checkout ────────────────────────────────────────────────────────
+    # ── 1)  Checkout ─────────────────────────────────────────────────────────────
     - uses: actions/checkout@v4
 
-    # ── 2  Install jq & doctl (once) ──────────────────────────────────────
-    - name: Install jq + doctl
-      run: |
-        sudo apt-get -qq update
-        sudo apt-get -qq install -y jq
-        VER=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest \
-              | jq -r .tag_name | sed 's/^v//')
-        curl -sL https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz \
-          | tar -xz
-        sudo mv doctl /usr/local/bin
-
-    - name: doctl auth
-      run: doctl auth init -t "$DIGITALOCEAN_TOKEN"
-
-    # ── 3  Terraform CLI ──────────────────────────────────────────────────
-    - uses: hashicorp/setup-terraform@v3
-      with:
-        terraform_version: 1.8.2
-
-    - name: terraform init
-      run: terraform -chdir=infra init -upgrade -input=false
-
-    # ── 4  Import existing DO stuff (unchanged logic, just in its own file)
-    - name: Import existing DO resources
-      run: infra/import_existing.sh
-
-    # ── 5  CLEAN-UP: kill dupe A-records for the 5 hosts we manage ───────
-    - name: Prune duplicate NameSilo A-records (once, pre-apply)
-      shell: bash
-      run: |
-        set -euo pipefail
-        hosts=( "@" "www" "admin" "ui" "api" )
-        echo "Pruning duplicates for: ${hosts[*]}"
-
-        all=$(curl -s "https://www.namesilo.com/api/dnsListRecords?version=1&type=json&key=${TF_VAR_ns_key}&domain=${TF_VAR_ns_domain}")
-
-        for h in "${hosts[@]}"; do
-          ids=($(echo "$all" \
-            | jq -r --arg H "$h" --arg D "$TF_VAR_ns_domain" '
-                 .reply.resource_record[]
-                 | select(.type=="A" and
-                         (if $H=="@" then .host==$D or .host=="@"
-                          else .host==$H+"."+$D end))
-                 | .record_id'))
-          (( ${#ids[@]} < 2 )) && continue       # 0 or 1 – nothing to prune
-
-          # Keep the first, delete the rest
-          printf "• %s → pruning %d duplicate(s)\n" "$h" "$(( ${#ids[@]} - 1 ))"
-          for rid in "${ids[@]:1}"; do
-            curl -s "https://www.namesilo.com/api/dnsDeleteRecord?version=1&type=json&key=${TF_VAR_ns_key}&domain=${TF_VAR_ns_domain}&rrid=${rid}" \
-              | jq -e '.reply.code=="300"' >/dev/null
-          done
-        done
-        echo "✓  duplicates gone"
-
-    # ── 6  PLAN + APPLY (single apply; DNS is part of the plan!) ──────────
-    - name: terraform plan
-      run: terraform -chdir=infra plan -input=false
-
-    - name: terraform apply
-      run: terraform -chdir=infra apply -auto-approve -input=false
-
-    # ── 7  Marketing site deploy (trigger only if that folder changed) ────
-    - id: changed
+    # ── 2)  Detect if marketing site changed (optional deploy later) ────────────
+    - id: filter
       uses: dorny/paths-filter@v3
       with:
         list-files: none
@@ -91,11 +32,49 @@ jobs:
           marketing:
             - 'axialy-marketing-site/**'
 
-    - name: Deploy marketing site to root droplet
-      if: steps.changed.outputs.marketing == 'true'
+    # ── 3)  doctl (install + auth)  <─— one line, zero curl/tar hassles ─────────
+    - uses: digitalocean/action-doctl@v2
+      with:
+        token: ${{ env.DIGITALOCEAN_TOKEN }}
+
+    # ── 4)  Terraform CLI ───────────────────────────────────────────────────────
+    - uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.8.2
+
+    - name: Terraform init
+      run: terraform -chdir=infra init -upgrade -input=false
+
+    # ── 5)  (Optional) import existing DO resources – keep your script unchanged
+    - name: Import existing resources
+      run: |
+        chmod +x infra/import_existing.sh
+        infra/import_existing.sh
+
+    # ── 6)  Plan  ───────────────────────────────────────────────────────────────
+    - name: Terraform plan
+      run: terraform -chdir=infra plan -input=false
+
+    # ── 7)  Apply on main ───────────────────────────────────────────────────────
+    - name: Terraform apply
+      if: github.ref == 'refs/heads/main'
+      run: terraform -chdir=infra apply -auto-approve -input=false
+
+    # ── 8)  Extract droplet IPs to env vars (used by deploy step) ──────────────
+    - id: ips
+      run: |
+        IPS=$(terraform -chdir=infra output -json droplet_ips)
+        echo "ROOT_IP=$(  echo "$IPS" | jq -r '.root')"  >> "$GITHUB_ENV"
+        echo "UI_IP=$(    echo "$IPS" | jq -r '.ui')"    >> "$GITHUB_ENV"
+        echo "API_IP=$(   echo "$IPS" | jq -r '.api')"   >> "$GITHUB_ENV"
+        echo "ADMIN_IP=$( echo "$IPS" | jq -r '.admin')" >> "$GITHUB_ENV"
+
+    # ── 9)  Deploy marketing site when files changed ───────────────────────────
+    - name: Deploy axialy-marketing-site to root droplet
+      if: steps.filter.outputs.marketing == 'true'
       uses: appleboy/scp-action@v0.1.5
       with:
-        host:   ${{ steps.apply.outputs.digitalocean_droplet_root_ipv4_address }}
+        host:   ${{ env.ROOT_IP }}
         username: root
         key:     ${{ env.DROPLET_SSH_KEY }}
         source:  "axialy-marketing-site/*"
