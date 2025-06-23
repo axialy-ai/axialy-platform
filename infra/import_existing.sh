@@ -12,7 +12,7 @@ if [ -n "$PID" ] && ! state_has digitalocean_project.axialy ; then
   terraform import digitalocean_project.axialy "$PID"
 fi
 
-# Managed MySQL cluster + two DBs
+# Managed MySQL cluster + DBs
 CID=$(doctl databases list --format ID,Name --no-header | awk '$2=="axialy-db-cluster"{print $1; exit}')
 if [ -n "$CID" ]; then
   state_has digitalocean_database_cluster.mysql || \
@@ -22,7 +22,7 @@ if [ -n "$CID" ]; then
   for RES in "${!DBS[@]}"; do
     DB="${DBS[$RES]}"
     if doctl databases db list "$CID" --format Name --no-header | grep -qw "$DB" \
-        && ! state_has "digitalocean_database_db.${RES}" ; then
+       && ! state_has "digitalocean_database_db.${RES}" ; then
       terraform import "digitalocean_database_db.${RES}" "${CID},${DB}"
     fi
   done
