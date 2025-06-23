@@ -1,11 +1,15 @@
 # .github/workflows/terraform.yml
-# ─────────────────────────────────────────────────────────────────────────────
-# Runs on every push to main.  First it **nukes every single A-record** in
-# NameSilo for axialy.ai, then it rolls straight into the same Terraform
-# pipeline you already had.
+# ──────────────────────────────────────────────────────────────────────────────
+# 1. terraform init  (same as before)
+# 2. terraform plan -out=tfplan           →  saves binary plan file
+# 3. Parse tfplan; work-out WHICH droplets are marked **create**.
+# 4. Purge ONLY the NameSilo A-records whose hostnames match those droplets.
+# 5. terraform apply tfplan               →  uses the *same* plan we parsed
+# 6. Finish exactly as before (outputs, NameSilo add/update, etc.)
+#
+# If Terraform isn’t creating a droplet, we leave its DNS records untouched.
 
 name: Terraform
-
 on:
   push:
     branches: [ "main" ]
@@ -15,44 +19,24 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # keep all creds in repo → Settings → Secrets and variables → Actions
-      NAMESILO_DOMAIN: axialy.ai
+      NAMESILO_DOMAIN: axialy.ai           # stays constant
       NAMESILO_API_KEY: ${{ secrets.NAMESILO_API_KEY }}
       DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
-      TF_VAR_do_token: ${{ secrets.DIGITALOCEAN_TOKEN }}
+      TF_VAR_do_token:  ${{ secrets.DIGITALOCEAN_TOKEN }}
 
     steps:
-
-    # ──────────────────────────────────────────────────────────────────
     - name: 📥 Checkout repo
       uses: actions/checkout@v4
 
-    # ─── KILL EVERY A RECORD BEFORE TERRAFORM TOUCHES ANYTHING ───────
-    - name: 💣 Purge NameSilo A-records
+    # ─── install deps exactly once ──────────────────────────────────────────
+    - name: 🔧 Install tooling (curl + jq + doctl)
       shell: bash
       run: |
-        echo "Listing A-records for ${NAMESILO_DOMAIN} …"
-        ids=$(curl -s "https://www.namesilo.com/api/dnsListRecords?version=1&type=json&key=${NAMESILO_API_KEY}&domain=${NAMESILO_DOMAIN}" \
-              | jq -r '.reply.resource_record[] | select(.type=="A") | .record_id')
-        if [ -z "$ids" ]; then
-          echo "No A records to delete. Moving on."
-          exit 0
-        fi
-        for rid in $ids; do
-          printf "Deleting %s … " "$rid"
-          code=$(curl -s "https://www.namesilo.com/api/dnsDeleteRecord?version=1&type=json&key=${NAMESILO_API_KEY}&domain=${NAMESILO_DOMAIN}&rrid=${rid}" \
-                   | jq -r '.reply.code')
-          [ "$code" = "300" ] && echo "OK" || { echo "FAILED (code $code)"; exit 1; }
-        done
-
-    # ──────────────────────────────────────────────────────────────────
-    - name: 🔧 Install doctl
-      shell: bash
-      run: |
-        set -e
+        sudo apt-get -qq update
+        sudo apt-get -qq install jq
         VER=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest \
-              | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
-        curl -sL "https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz" \
+              | jq -r .tag_name | sed 's/^v//')
+        curl -sL https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz \
           | tar -xz
         sudo mv doctl /usr/local/bin
 
@@ -65,29 +49,98 @@ jobs:
         terraform_version: 1.8.2
         cli_config_credentials_hostname: app.terraform.io
 
-    # ─── Terraform workflow (identical to what you had) ───────────────
+    # ─── Terraform init + your existing import script ──────────────────────
     - name: terraform init
       run: terraform -chdir=infra init -upgrade
 
     - name: Pre-import DO resources
-      run: infra/pre_import.sh        # <- your existing import script
+      run: infra/pre_import.sh        # ← your existing script, untouched
 
-    - name: terraform plan
-      run: terraform -chdir=infra plan -input=false
+    # ─── PLAN: we keep the binary plan so we can parse it and then apply it ─
+    - name: terraform plan (save as tfplan)
+      run: terraform -chdir=infra plan -out=tfplan -input=false
 
+    # ─── Decide which hostnames need to be purged BEFORE apply ─────────────
+    - name: 🔍 Figure out droplets that will be **created**
+      id: calc
+      shell: bash
+      run: |
+        set -e
+        # show -json dumps the saved plan in JSON → parse for create actions
+        terraform -chdir=infra show -json tfplan > plan.json
+        # Grab droplet resources scheduled for "create"
+        CREATES=$(jq -r '
+          .resource_changes[]
+          | select(.type=="digitalocean_droplet")
+          | select(.change.actions[]=="create")
+          | .name' plan.json)
+
+        echo "Droplets to be created: $CREATES"
+
+        # map Terraform resource name  →  FQDN
+        declare -A MAP=(
+          [root]="axialy.ai"
+          [ui]="ui.axialy.ai"
+          [api]="api.axialy.ai"
+          [admin]="admin.axialy.ai"
+        )
+
+        HOSTS=()
+        for r in $CREATES; do
+          HOSTS+=("${MAP[$r]}")
+        done
+
+        printf '%s\n' "${HOSTS[@]}" > hosts.txt
+        echo "hosts_for_purge=$(printf '%s,' "${HOSTS[@]}")" >> "$GITHUB_OUTPUT"
+
+    # ─── Purge just those hosts’ A-records ─────────────────────────────────
+    - name: 💣 Purge NameSilo A-records for new droplets
+      if: steps.calc.outputs.hosts_for_purge != ''
+      shell: bash
+      run: |
+        set -e
+        readarray -t HOSTS < hosts.txt
+
+        echo "Will purge A-records for: ${HOSTS[*]}"
+
+        # grab *all* A records once
+        ALL=$(curl -s "https://www.namesilo.com/api/dnsListRecords?version=1&type=json&key=${NAMESILO_API_KEY}&domain=${NAMESILO_DOMAIN}")
+
+        for host in "${HOSTS[@]}"; do
+          echo "–– ${host}"
+          # match records whose .host **starts with** the hostname we care about
+          ids=$(echo "$ALL" \
+                | jq -r --arg H "$host" '.reply.resource_record[]
+                       | select(.type=="A" and (.host|startswith($H)))
+                       | .record_id')
+          if [ -z "$ids" ]; then
+            echo "   (no records)"
+            continue
+          fi
+          for rid in $ids; do
+            printf "   deleting %s … " "$rid"
+            code=$(curl -s \
+              "https://www.namesilo.com/api/dnsDeleteRecord?version=1&type=json&key=${NAMESILO_API_KEY}&domain=${NAMESILO_DOMAIN}&rrid=${rid}" \
+              | jq -r '.reply.code')
+            [ "$code" = "300" ] && echo ok || { echo "FAILED (code $code)" ; exit 1; }
+          done
+        done
+
+    # ─── APPLY exactly the plan we analysed ────────────────────────────────
     - name: terraform apply
-      run: terraform -chdir=infra apply -auto-approve -input=false
+      run: terraform -chdir=infra apply -auto-approve tfplan
 
-    # ─── capture droplet IPs for later NameSilo update ────────────────
-    - name: Pull droplet IPs into env
+    # ─── Grab droplet IPs → env vars  (unchanged) ──────────────────────────
+    - name: Expose droplet IP outputs
       shell: bash
       run: |
         IPS=$(terraform -chdir=infra output -json droplet_ips)
-        echo "ROOT_IP=$(  echo "$IPS" | jq -r '.root')"  >> "$GITHUB_ENV"
-        echo "UI_IP=$(    echo "$IPS" | jq -r '.ui')"    >> "$GITHUB_ENV"
-        echo "API_IP=$(   echo "$IPS" | jq -r '.api')"   >> "$GITHUB_ENV"
-        echo "ADMIN_IP=$( echo "$IPS" | jq -r '.admin')" >> "$GITHUB_ENV"
+        echo "ROOT_IP=$(  echo "$IPS" | jq -r '.root')"  >> $GITHUB_ENV
+        echo "UI_IP=$(    echo "$IPS" | jq -r '.ui')"    >> $GITHUB_ENV
+        echo "API_IP=$(   echo "$IPS" | jq -r '.api')"   >> $GITHUB_ENV
+        echo "ADMIN_IP=$( echo "$IPS" | jq -r '.admin')" >> $GITHUB_ENV
 
-    - name: 🔄 Post-apply NameSilo update
+    # ─── Your existing namesilo *add/update* script ────────────────────────
+    - name: 🔄 Update NameSilo to point at fresh IPs
       run: infra/update_namesilo.sh
-# ─────────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
