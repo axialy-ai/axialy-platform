@@ -1,3 +1,4 @@
+# infra/variables.tf
 variable "do_token" {
   description = "DigitalOcean API token"
   type        = string
