@@ -4,13 +4,14 @@ variable "do_token" {
   sensitive   = true
 }
 
-variable "ns_key" {
-  description = "NameSilo API key"
+variable "region" {
+  description = "Region to create resources in"
   type        = string
-  sensitive   = true
+  default     = "sfo3"
 }
 
-variable "ns_domain" {
-  description = "Domain managed at NameSilo (apex, e.g. example.com)"
+variable "droplet_size" {
+  description = "Droplet size slug"
   type        = string
+  default     = "s-1vcpu-1gb"
 }
