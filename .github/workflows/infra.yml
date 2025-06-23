@@ -1,4 +1,5 @@
 name: Terraform DigitalOcean
+
 on:
   push:
     branches: [ "main" ]
@@ -7,58 +8,143 @@ jobs:
   terraform:
     runs-on: ubuntu-latest
     env:
-      DIGITALOCEAN_TOKEN:  ${{ secrets.DIGITALOCEAN_TOKEN }}
-      TF_VAR_do_token:     ${{ secrets.DIGITALOCEAN_TOKEN }}
-      NAMESILO_API_KEY:    ${{ secrets.NAMESILO_API_KEY }}
-      NAMESILO_DOMAIN:     axialy.ai
-      # ➜ add a secret with the pass-phrase that protects your SSH key
-      DROPLET_SSH_KEY:     ${{ secrets.DROPLET_SSH_KEY }}
-      DROPLET_SSH_PASSPHRASE: ${{ secrets.DROPLET_SSH_PASSPHRASE }}
+      DIGITALOCEAN_TOKEN:       ${{ secrets.DIGITALOCEAN_TOKEN }}
+      TF_VAR_do_token:          ${{ secrets.DIGITALOCEAN_TOKEN }}
+      NAMESILO_API_KEY:         ${{ secrets.NAMESILO_API_KEY }}
+      NAMESILO_DOMAIN:          axialy.ai
+      DROPLET_SSH_KEY:          ${{ secrets.DROPLET_SSH_KEY }}
+      DROPLET_SSH_PASSPHRASE:   ${{ secrets.DROPLET_SSH_PASSPHRASE }}
 
     steps:
-    # ───────────────────────────────
-    # Checkout & Terraform (unchanged)
-    # ───────────────────────────────
-    - uses: actions/checkout@v4
-    # … all the Terraform steps you already have …
 
-    # Grab public IPs  ──────────────
+    # ─────────────────────────────────────────
+    # 1 – Checkout repo
+    # ─────────────────────────────────────────
+    - uses: actions/checkout@v4
+
+
+    # ─────────────────────────────────────────
+    # 2 – Wipe any local artefacts that could resurrect old providers
+    # ─────────────────────────────────────────
+    - name: Remove stale Terraform artefacts
+      run: |
+        rm -f infra/terraform.tfstate*
+        rm -f infra/.terraform.lock.hcl
+        rm -rf infra/.terraform
+
+
+    # ─────────────────────────────────────────
+    # 3 – Detect content changes (marketing / ui / admin)
+    # ─────────────────────────────────────────
+    - id: filter
+      uses: dorny/paths-filter@v3
+      with:
+        list-files: none
+        initial-fetch-depth: 100
+        filters: |
+          marketing:
+            - 'axialy-marketing-site/**'
+          ui:
+            - 'axialy-ui-product/**'
+          admin:
+            - 'axialy-admin-product/**'
+
+
+    # ─────────────────────────────────────────
+    # 4 – Install doctl & authenticate
+    # ─────────────────────────────────────────
+    - name: Install doctl
+      run: |
+        set -e
+        VER=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest \
+               | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
+        curl -sL "https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz" \
+          | tar -xz
+        sudo mv doctl /usr/local/bin
+
+    - name: doctl auth
+      run: doctl auth init -t "$DIGITALOCEAN_TOKEN"
+
+
+    # ─────────────────────────────────────────
+    # 5 – Install Terraform CLI
+    # ─────────────────────────────────────────
+    - uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.8.2
+
+
+    # ─────────────────────────────────────────
+    # 6 – Terraform init / import / plan / apply
+    # ─────────────────────────────────────────
+    - name: Terraform init
+      run: terraform -chdir=infra init -upgrade
+
+    - name: Import existing resources
+      run: bash infra/import_existing.sh
+
+    - name: Purge stale NameSilo A-records
+      env:
+        NAMESILO_API_KEY: ${{ env.NAMESILO_API_KEY }}
+        NAMESILO_DOMAIN:  ${{ env.NAMESILO_DOMAIN }}
+      run: bash infra/purge_namesilo_missing.sh
+
+    - name: Terraform plan
+      run: terraform -chdir=infra plan -input=false
+
+    - name: Terraform apply
+      if: github.ref == 'refs/heads/main'
+      run: terraform -chdir=infra apply -auto-approve -input=false
+
+
+    # ─────────────────────────────────────────
+    # 7 – Capture droplet IPs
+    # ─────────────────────────────────────────
     - id: ips
       run: |
         IPS=$(terraform -chdir=infra output -json droplet_ips)
-        echo ROOT_IP=$(jq -r '.root'  <<<"$IPS")  >>"$GITHUB_ENV"
-        echo UI_IP=$(  jq -r '.ui'    <<<"$IPS")  >>"$GITHUB_ENV"
-        echo API_IP=$( jq -r '.api'   <<<"$IPS")  >>"$GITHUB_ENV"
-        echo ADMIN_IP=$(jq -r '.admin'<<<"$IPS")  >>"$GITHUB_ENV"
+        echo "ROOT_IP=$(  echo "$IPS" | jq -r '.root')"  >> "$GITHUB_ENV"
+        echo "UI_IP=$(    echo "$IPS" | jq -r '.ui')"    >> "$GITHUB_ENV"
+        echo "API_IP=$(   echo "$IPS" | jq -r '.api')"   >> "$GITHUB_ENV"
+        echo "ADMIN_IP=$( echo "$IPS" | jq -r '.admin')" >> "$GITHUB_ENV"
 
-    # Wait for each droplet’s SSH port
-    - name: ⏳ Wait for SSH on new droplets
+
+    # ─────────────────────────────────────────
+    # 8 – Wait for SSH on droplets we’ll deploy to
+    # ─────────────────────────────────────────
+    - name: ⏳ Wait for SSH on droplets
       shell: bash
       run: |
         wait_ssh () {
-          local HOST=$1
-          echo "Waiting for SSH on $HOST …"
+          local host=$1
+          echo "⏳ Waiting for SSH on $host …"
           for i in {1..30}; do
-            if nc -z -w3 "$HOST" 22; then
-              echo "✅  $HOST is ready"
-              return 0
-            fi
+            nc -z -w3 "$host" 22 && { echo "✅  $host ready"; return; }
             sleep 5
           done
-          echo "::error::SSH never became ready on $HOST"; exit 1
+          echo "::error::SSH never became ready on $host"; exit 1
         }
         wait_ssh "$ROOT_IP"
         wait_ssh "$UI_IP"
         wait_ssh "$ADMIN_IP"
-      env:
-        ROOT_IP:  ${{ env.ROOT_IP }}
-        UI_IP:    ${{ env.UI_IP }}
-        ADMIN_IP: ${{ env.ADMIN_IP }}
 
-    # ───────────────────────────────
-    # Deploy static sites (now with pass-phrase, no unsupported inputs)
-    # ───────────────────────────────
-    - name: Deploy marketing site → root
+
+    # ─────────────────────────────────────────
+    # 9 – Update NameSilo DNS so records match new IPs
+    # ─────────────────────────────────────────
+    - name: Update NameSilo DNS
+      if: github.ref == 'refs/heads/main'
+      env:
+        NAMESILO_API_KEY: ${{ env.NAMESILO_API_KEY }}
+        NAMESILO_DOMAIN:  ${{ env.NAMESILO_DOMAIN }}
+      run: bash infra/update_namesilo.sh
+
+
+    # ─────────────────────────────────────────
+    # 10 – SCP deployments (only if paths changed)
+    # ─────────────────────────────────────────
+    - name: Deploy marketing site → root droplet
+      if: steps.filter.outputs.marketing == 'true'
       uses: appleboy/scp-action@v0.1.5
       with:
         host:       ${{ env.ROOT_IP }}
@@ -68,10 +154,10 @@ jobs:
         source:     axialy-marketing-site/*
         target:     /var/www/html/
         strip_components: 1
-        timeout:    120s          # ← only recognised input; “retry” removed
-        port:       22
+        timeout:    120s
 
     - name: Deploy UI product → ui droplet
+      if: steps.filter.outputs.ui == 'true'
       uses: appleboy/scp-action@v0.1.5
       with:
         host:       ${{ env.UI_IP }}
@@ -82,9 +168,9 @@ jobs:
         target:     /var/www/html/
         strip_components: 1
         timeout:    120s
-        port:       22
 
     - name: Deploy Admin product → admin droplet
+      if: steps.filter.outputs.admin == 'true'
       uses: appleboy/scp-action@v0.1.5
       with:
         host:       ${{ env.ADMIN_IP }}
@@ -95,4 +181,3 @@ jobs:
         target:     /var/www/html/
         strip_components: 1
         timeout:    120s
-        port:       22
