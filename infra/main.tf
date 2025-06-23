@@ -1,5 +1,5 @@
 ########################################
-# Axialy DigitalOcean Infrastructure
+# Axialy – DigitalOcean Infrastructure
 ########################################
 
 locals {
@@ -8,7 +8,7 @@ locals {
   image  = "ubuntu-22-04-x64"
 }
 
-# ── Project ───────────────────────────────────────────────────────────
+########## Project
 resource "digitalocean_project" "axialy" {
   name        = "Axialy"
   description = "Project that hosts the Axialy platform"
@@ -16,7 +16,7 @@ resource "digitalocean_project" "axialy" {
   environment = "Production"
 }
 
-# ── Droplets ──────────────────────────────────────────────────────────
+########## Droplets
 resource "digitalocean_droplet" "admin" {
   name   = "admin.axialy.ai"
   region = local.region
@@ -41,7 +41,7 @@ resource "digitalocean_droplet" "api" {
   tags   = ["axialy", "api"]
 }
 
-resource "digitalocean_droplet" "root" {          # ← marketing site
+resource "digitalocean_droplet" "root" {          # marketing site
   name   = "axialy.ai"
   region = local.region
   size   = local.size
@@ -49,7 +49,7 @@ resource "digitalocean_droplet" "root" {          # ← marketing site
   tags   = ["axialy", "www"]
 }
 
-# ── Managed MySQL cluster ─────────────────────────────────────────────
+########## Managed MySQL
 resource "digitalocean_database_cluster" "mysql" {
   name       = "axialy-db-cluster"
   engine     = "mysql"
@@ -69,9 +69,9 @@ resource "digitalocean_database_db" "ui" {
   name       = "Axialy_UI"
 }
 
-# ── Attach everything to the project ──────────────────────────────────
+########## Attach everything to the project
 resource "digitalocean_project_resources" "attach" {
-  project = digitalocean_project.axialy.id
+  project   = digitalocean_project.axialy.id
   resources = [
     digitalocean_droplet.admin.urn,
     digitalocean_droplet.ui.urn,
