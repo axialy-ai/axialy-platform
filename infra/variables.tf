@@ -16,3 +16,9 @@ variable "droplet_size" {
   type        = string
   default     = "s-1vcpu-1gb"
 }
+
+variable "namesilo_api_key" {
+  description = "API key for the (unused) Terraform NameSilo provider"
+  type        = string
+  sensitive   = true
+}
