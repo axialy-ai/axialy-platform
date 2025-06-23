@@ -1,15 +1,9 @@
-###############################################################################
-# Keep A-records in NameSilo in sync with the droplets IPs
-###############################################################################
-
+# ── A-records we want in NameSilo ──────────────────────────────────────────────
 locals {
-  # Map: host-part  ->  IP address
   a_records = {
-    "@",   = digitalocean_droplet.root.ipv4_address   # apex
-    "www", = digitalocean_droplet.root.ipv4_address
-    "admin" = digitalocean_droplet.admin.ipv4_address
-    "ui"    = digitalocean_droplet.ui.ipv4_address
-    "api"   = digitalocean_droplet.api.ipv4_address
+    "@"   = digitalocean_droplet.root.ipv4_address   # apex → root droplet
+    "www" = digitalocean_droplet.root.ipv4_address   # www  → same root
+    "api" = digitalocean_droplet.api.ipv4_address    # api  → api droplet
   }
 }
 
@@ -18,11 +12,15 @@ resource "namesilo_dns_record" "a_records" {
 
   domain = var.ns_domain
   host   = each.key
-  type   = "A"
   value  = each.value
+  type   = "A"
   ttl    = 3600
 
   lifecycle {
-    create_before_destroy = true   # zero downtime when IP changes
+    # re-create DNS record when the referenced droplet is replaced
+    replace_triggered_by = [
+      digitalocean_droplet.root,   # safe – resource ref, not each.value
+      digitalocean_droplet.api
+    ]
   }
 }
