@@ -1,56 +1,63 @@
 #!/usr/bin/env bash
+# -----------------------------------------------------------------------------
+# purge_namesilo_missing.sh
+# -----------------------------------------------------------------------------
+# Deletes any NameSilo A‑records that do **not** map to an existing DigitalOcean
+# droplet.  Used by the GitHub Actions workflow before Terraform creates new
+# droplets so that the zone is always in sync.
+#
+# Required environment variables (already set in the workflow):
+#   - NAMESILO_API_KEY   – your NameSilo API key
+#   - NAMESILO_DOMAIN    – e.g. "axialy.ai"
+#   - DIGITALOCEAN_TOKEN – picked up by `doctl` (already authenticated earlier)
+# -----------------------------------------------------------------------------
 set -euo pipefail
 
-KEY="${NAMESILO_API_KEY:?Missing NAMESILO_API_KEY}"
-DOMAIN="${NAMESILO_DOMAIN:?Missing NAMESILO_DOMAIN}"
+API_KEY="${NAMESILO_API_KEY:?NAMESILO_API_KEY is required}"
+DOMAIN="${NAMESILO_DOMAIN:?NAMESILO_DOMAIN is required}"
 
-# ---------------------------------------------------------------------
-# 1. Collect current droplets (name ➜ public-IP) ----------------------
-# ---------------------------------------------------------------------
-#       name -> ui.axialy.ai
-#       ip   -> 143.198.155.79
-# ---------------------------------------------------------------------
-mapfile -t DROPLET_INFO < <(
-  doctl compute droplet list -o json |
-  jq -r '.[] | .name as $n
-                | .networks.v4[]?|select(.type=="public")|$n+","+ .ip_address'
+# -----------------------------------------------------------------------------
+# 1. Collect current droplets + public IPv4 addresses from DigitalOcean
+# -----------------------------------------------------------------------------
+DROPLETS_JSON=$(doctl compute droplet list --output json)
+
+declare -A DROPLET_IPS  # [fqdn]=ip
+
+while IFS=$'\t' read -r name ip; do
+  # Ensure the host we compare with NameSilo matches what Terraform creates.
+  # If the droplet name already ends with the domain, keep it; otherwise append.
+  if [[ "$name" == *."$DOMAIN" ]]; then
+    fqdn="$name"
+  else
+    fqdn="$name.$DOMAIN"
+  fi
+  DROPLET_IPS["$fqdn"]="$ip"
+done < <(
+  echo "$DROPLETS_JSON" | jq -r '
+    .[] | [.name, (.networks.v4[] | select(.type=="public").ip_address)] | @tsv'
 )
 
-# Build two grep-ready, *literal* (-F) lists
-droplet_names=()
-droplet_ips=()
-for row in "${DROPLET_INFO[@]}"; do
-  IFS=',' read -r n ip <<<"$row"
-  droplet_names+=("$n")
-  droplet_ips+=("$ip")
-done
+# -----------------------------------------------------------------------------
+# 2. Fetch NameSilo DNS records (JSON)
+# -----------------------------------------------------------------------------
+RECORDS_JSON=$(curl -s \
+  "https://www.namesilo.com/api/dnsListRecords?version=1&type=json&key=${API_KEY}&domain=${DOMAIN}")
 
-# Helpers that test membership with an exact (-x) fixed-string (-F) match
-in_names() { printf '%s\n' "${droplet_names[@]}" | grep -Fxq "$1"; }
-in_ips()   { printf '%s\n' "${droplet_ips[@]}"   | grep -Fxq "$1"; }
+# -----------------------------------------------------------------------------
+# 3. Remove any A‑record whose IP does not match a droplet
+# -----------------------------------------------------------------------------
+FILTER='.reply.resource_record[] | select(.type == "A")'
 
-# ---------------------------------------------------------------------
-# 2. Pull all NameSilo A records for the zone -------------------------
-# ---------------------------------------------------------------------
-readarray -t NS_RECORDS < <(
-  curl -s "https://www.namesilo.com/api/dnsListRecords?version=1&type=xml&key=${KEY}&domain=${DOMAIN}" |
-  xq -r '.namesilo.reply.resource_record[] 
-         | select(.type=="A") 
-         | "\(.record_id) \(.host) \(.value)"' )
-
-# ---------------------------------------------------------------------
-# 3. Delete any NameSilo A record that no longer matches --------------
-#    a live droplet *by name*  OR  *by IP* ----------------------------
-# ---------------------------------------------------------------------
-for rec in "${NS_RECORDS[@]}"; do
-  read -r RID HOST VALUE <<<"$rec"
-
-  # NameSilo returns FQDNs.  Normalise just in case.
-  HOST=${HOST%.}                       # strip trailing dot
-  HOST=${HOST,,}                       # lower-case
-
-  if ! in_names "$HOST" || ! in_ips "$VALUE"; then
-    echo "Removing stale record $HOST ($RID ➜ $VALUE)"
-    curl -s "https://www.namesilo.com/api/dnsDeleteRecord?version=1&type=xml&key=${KEY}&domain=${DOMAIN}&rrid=${RID}" >/dev/null
+echo "$RECORDS_JSON" | jq -r --argjson keep "$(printf '%s\n' "${!DROPLET_IPS[@]}")" '
+  '"$FILTER"' | "\(.record_id)\t\(.host)\t\(.value)"' | while IFS=$'\t' read -r rrid host value; do
+  desired_ip="${DROPLET_IPS[$host]-}"
+  if [[ -z "$desired_ip" || "$desired_ip" != "$value" ]]; then
+    echo "Deleting stale record: $host → $value (rrid=$rrid)"
+    curl -s \
+      "https://www.namesilo.com/api/dnsDeleteRecord?version=1&type=json&key=${API_KEY}&domain=${DOMAIN}&rrid=${rrid}" \
+      | jq -e '.reply.code == 300' > /dev/null \
+      || echo "WARNING: deletion failed for rrid=$rrid"
   fi
 done
+
+echo "✓ NameSilo zone purged – only active droplets remain."
