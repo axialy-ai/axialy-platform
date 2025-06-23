@@ -1,8 +1,9 @@
+# infra/import_existing.sh
 #!/usr/bin/env bash
-# Imports already-running DO resources into Terraform state
 set -eo pipefail
 
 state_has () { [ -f terraform.tfstate ] && terraform state list | grep -q "^$1$"; }
+
 cd "$(dirname "$0")"
 
 # Project
@@ -11,7 +12,7 @@ if [ -n "$PID" ] && ! state_has digitalocean_project.axialy ; then
   terraform import digitalocean_project.axialy "$PID"
 fi
 
-# Managed MySQL cluster + DBs
+# Managed MySQL cluster + two DBs
 CID=$(doctl databases list --format ID,Name --no-header | awk '$2=="axialy-db-cluster"{print $1; exit}')
 if [ -n "$CID" ]; then
   state_has digitalocean_database_cluster.mysql || \
@@ -28,12 +29,7 @@ if [ -n "$CID" ]; then
 fi
 
 # Droplets
-declare -A DROPS=(
-  ["ui"]="ui.axialy.ai"
-  ["api"]="api.axialy.ai"
-  ["admin"]="admin.axialy.ai"
-  ["root"]="axialy.ai"
-)
+declare -A DROPS=( ["ui"]="ui.axialy.ai" ["api"]="api.axialy.ai" ["admin"]="admin.axialy.ai" ["root"]="axialy.ai" )
 for RES in "${!DROPS[@]}"; do
   NAME="${DROPS[$RES]}"
   DID=$(doctl compute droplet list --format ID,Name --no-header | awk -v n="$NAME" '$2==n{print $1; exit}')
