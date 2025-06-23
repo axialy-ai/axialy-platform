@@ -140,11 +140,11 @@ jobs:
       run: bash infra/update_namesilo.sh
 
 
-    # ─────────────────────────────────────────
-    # 10 – SCP deployments (only if paths changed)
-    # ─────────────────────────────────────────
+    # excerpt from .github/workflows/infra.yml  (only the deploy block shown)
+    # ---------------------------------------------------------------
+    # 10 – SCP deployments (ALWAYS after Terraform)
     - name: Deploy marketing site → root droplet
-      if: steps.filter.outputs.marketing == 'true'
+      if: success()        # ← run after Terraform success, every time
       uses: appleboy/scp-action@v0.1.5
       with:
         host:       ${{ env.ROOT_IP }}
@@ -157,7 +157,7 @@ jobs:
         timeout:    120s
 
     - name: Deploy UI product → ui droplet
-      if: steps.filter.outputs.ui == 'true'
+      if: success()
       uses: appleboy/scp-action@v0.1.5
       with:
         host:       ${{ env.UI_IP }}
@@ -170,7 +170,7 @@ jobs:
         timeout:    120s
 
     - name: Deploy Admin product → admin droplet
-      if: steps.filter.outputs.admin == 'true'
+      if: success()
       uses: appleboy/scp-action@v0.1.5
       with:
         host:       ${{ env.ADMIN_IP }}
