@@ -1,0 +1,6 @@
+# .gitignore  (root)
+infra/terraform.tfstate*
+infra/.terraform/
+*.tfplan
+*.tfbackup
+.terraform.lock.hcl
