@@ -1,63 +1,78 @@
 #!/usr/bin/env bash
-# -----------------------------------------------------------------------------
-# purge_namesilo_missing.sh
-# -----------------------------------------------------------------------------
-# Deletes any NameSilo A‑records that do **not** map to an existing DigitalOcean
-# droplet.  Used by the GitHub Actions workflow before Terraform creates new
-# droplets so that the zone is always in sync.
+# ---------------------------------------------------------------------------
+# Purge NameSilo A-records that no longer map to an existing DigitalOcean
+# droplet, then add any A-records that are missing.
 #
-# Required environment variables (already set in the workflow):
-#   - NAMESILO_API_KEY   – your NameSilo API key
-#   - NAMESILO_DOMAIN    – e.g. "axialy.ai"
-#   - DIGITALOCEAN_TOKEN – picked up by `doctl` (already authenticated earlier)
-# -----------------------------------------------------------------------------
+# Requires:
+#   - doctl (already installed earlier in the workflow)
+#   - jq
+#   - $NAMESILO_API_KEY  – NameSilo API key                  (env var)
+#   - $NAMESILO_DOMAIN   – e.g. axialy.ai                    (env var)
+# ---------------------------------------------------------------------------
 set -euo pipefail
 
-API_KEY="${NAMESILO_API_KEY:?NAMESILO_API_KEY is required}"
-DOMAIN="${NAMESILO_DOMAIN:?NAMESILO_DOMAIN is required}"
+API="https://www.namesilo.com/api"
+DOMAIN="${NAMESILO_DOMAIN:?NAMESILO_DOMAIN not set}"
+KEY="${NAMESILO_API_KEY:?NAMESILO_API_KEY not set}"
 
-# -----------------------------------------------------------------------------
-# 1. Collect current droplets + public IPv4 addresses from DigitalOcean
-# -----------------------------------------------------------------------------
-DROPLETS_JSON=$(doctl compute droplet list --output json)
+##############################################################################
+# 1. Gather live droplets  ➜  associative array  DROPLET_IPS[host]=ip
+##############################################################################
+echo "🔎 Fetching droplets from DigitalOcean…"
+declare -A DROPLET_IPS
 
-declare -A DROPLET_IPS  # [fqdn]=ip
+doctl compute droplet list -o json |
+  jq -r '.[] |
+         [.name,
+          (.networks.v4[] | select(.type=="public").ip_address)]
+         | @tsv' |
+  while IFS=$'\t' read -r NAME IP; do
+    DROPLET_IPS["$NAME"]="$IP"
+  done
 
-while IFS=$'\t' read -r name ip; do
-  # Ensure the host we compare with NameSilo matches what Terraform creates.
-  # If the droplet name already ends with the domain, keep it; otherwise append.
-  if [[ "$name" == *."$DOMAIN" ]]; then
-    fqdn="$name"
-  else
-    fqdn="$name.$DOMAIN"
-  fi
-  DROPLET_IPS["$fqdn"]="$ip"
-done < <(
-  echo "$DROPLETS_JSON" | jq -r '
-    .[] | [.name, (.networks.v4[] | select(.type=="public").ip_address)] | @tsv'
-)
+##############################################################################
+# 2. Gather current NameSilo A-records
+#       ➜ NS_IPS[host]=ip      (for fast look-ups)
+#       ➜ NS_IDS[host]=record_id (needed for deletes)
+##############################################################################
+echo "🔎 Fetching A-records from NameSilo…"
+declare -A NS_IPS NS_IDS
 
-# -----------------------------------------------------------------------------
-# 2. Fetch NameSilo DNS records (JSON)
-# -----------------------------------------------------------------------------
-RECORDS_JSON=$(curl -s \
-  "https://www.namesilo.com/api/dnsListRecords?version=1&type=json&key=${API_KEY}&domain=${DOMAIN}")
+curl -s "$API/dnsListRecords?version=1&type=json&key=$KEY&domain=$DOMAIN" |
+  jq -r '.reply.resource_record[]
+         | select(.type=="A")
+         | [.record_id, .host, .value] | @tsv' |
+  while IFS=$'\t' read -r ID HOST IP; do
+    NS_IPS["$HOST"]="$IP"
+    NS_IDS["$HOST"]="$ID"
+  done
 
-# -----------------------------------------------------------------------------
-# 3. Remove any A‑record whose IP does not match a droplet
-# -----------------------------------------------------------------------------
-FILTER='.reply.resource_record[] | select(.type == "A")'
-
-echo "$RECORDS_JSON" | jq -r --argjson keep "$(printf '%s\n' "${!DROPLET_IPS[@]}")" '
-  '"$FILTER"' | "\(.record_id)\t\(.host)\t\(.value)"' | while IFS=$'\t' read -r rrid host value; do
-  desired_ip="${DROPLET_IPS[$host]-}"
-  if [[ -z "$desired_ip" || "$desired_ip" != "$value" ]]; then
-    echo "Deleting stale record: $host → $value (rrid=$rrid)"
+##############################################################################
+# 3. Delete stale records – present in NameSilo but not in DO (or IP mismatch)
+##############################################################################
+for HOST in "${!NS_IPS[@]}"; do
+  if [[ -z "${DROPLET_IPS[$HOST]+x}" || "${DROPLET_IPS[$HOST]}" != "${NS_IPS[$HOST]}" ]]; then
+    echo "🗑️  Deleting stale record  $HOST → ${NS_IPS[$HOST]}"
     curl -s \
-      "https://www.namesilo.com/api/dnsDeleteRecord?version=1&type=json&key=${API_KEY}&domain=${DOMAIN}&rrid=${rrid}" \
-      | jq -e '.reply.code == 300' > /dev/null \
-      || echo "WARNING: deletion failed for rrid=$rrid"
+      "$API/dnsDeleteRecord?version=1&type=json&key=$KEY&domain=$DOMAIN&rrid=${NS_IDS[$HOST]}" \
+      >/dev/null
   fi
 done
 
-echo "✓ NameSilo zone purged – only active droplets remain."
+##############################################################################
+# 4. Add missing records – present in DO but not yet in NameSilo
+##############################################################################
+for HOST in "${!DROPLET_IPS[@]}"; do
+  if [[ -z "${NS_IPS[$HOST]+x}" ]]; then
+    IP="${DROPLET_IPS[$HOST]}"
+    # NameSilo wants the host *relative* to the domain ("" or "@” for apex)
+    RRHOST="${HOST%.$DOMAIN}"
+    [[ "$RRHOST" == "$HOST" ]] && RRHOST="@"   # apex record
+    echo "➕ Adding record         $HOST → $IP"
+    curl -s \
+      "$API/dnsAddRecord?version=1&type=json&key=$KEY&domain=$DOMAIN&rrtype=A&rrhost=$RRHOST&rrvalue=$IP&rrttl=3600" \
+      >/dev/null
+  fi
+done
+
+echo "✅  NameSilo zone is now fully in sync with live droplets."
