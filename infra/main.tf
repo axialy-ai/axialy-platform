@@ -2,7 +2,6 @@
 ########################################
 # Axialy DigitalOcean Infrastructure
 ########################################
-
 locals {
   region = "sfo3"
   size   = "s-1vcpu-1gb"
@@ -70,9 +69,9 @@ resource "digitalocean_database_db" "ui" {
   name       = "Axialy_UI"
 }
 
-# Attach everything to the project
+# Attach all resources to the project
 resource "digitalocean_project_resources" "attach" {
-  project = digitalocean_project.axialy.id
+  project   = digitalocean_project.axialy.id
   resources = [
     digitalocean_droplet.admin.urn,
     digitalocean_droplet.ui.urn,
