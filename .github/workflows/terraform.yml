@@ -1,0 +1,93 @@
+# .github/workflows/terraform.yml
+# ─────────────────────────────────────────────────────────────────────────────
+# Runs on every push to main.  First it **nukes every single A-record** in
+# NameSilo for axialy.ai, then it rolls straight into the same Terraform
+# pipeline you already had.
+
+name: Terraform
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+
+    env:
+      # keep all creds in repo → Settings → Secrets and variables → Actions
+      NAMESILO_DOMAIN: axialy.ai
+      NAMESILO_API_KEY: ${{ secrets.NAMESILO_API_KEY }}
+      DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+      TF_VAR_do_token: ${{ secrets.DIGITALOCEAN_TOKEN }}
+
+    steps:
+
+    # ──────────────────────────────────────────────────────────────────
+    - name: 📥 Checkout repo
+      uses: actions/checkout@v4
+
+    # ─── KILL EVERY A RECORD BEFORE TERRAFORM TOUCHES ANYTHING ───────
+    - name: 💣 Purge NameSilo A-records
+      shell: bash
+      run: |
+        echo "Listing A-records for ${NAMESILO_DOMAIN} …"
+        ids=$(curl -s "https://www.namesilo.com/api/dnsListRecords?version=1&type=json&key=${NAMESILO_API_KEY}&domain=${NAMESILO_DOMAIN}" \
+              | jq -r '.reply.resource_record[] | select(.type=="A") | .record_id')
+        if [ -z "$ids" ]; then
+          echo "No A records to delete. Moving on."
+          exit 0
+        fi
+        for rid in $ids; do
+          printf "Deleting %s … " "$rid"
+          code=$(curl -s "https://www.namesilo.com/api/dnsDeleteRecord?version=1&type=json&key=${NAMESILO_API_KEY}&domain=${NAMESILO_DOMAIN}&rrid=${rid}" \
+                   | jq -r '.reply.code')
+          [ "$code" = "300" ] && echo "OK" || { echo "FAILED (code $code)"; exit 1; }
+        done
+
+    # ──────────────────────────────────────────────────────────────────
+    - name: 🔧 Install doctl
+      shell: bash
+      run: |
+        set -e
+        VER=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest \
+              | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
+        curl -sL "https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz" \
+          | tar -xz
+        sudo mv doctl /usr/local/bin
+
+    - name: 🔑 Auth to DigitalOcean
+      run: doctl auth init -t "${DIGITALOCEAN_TOKEN}"
+
+    - name: 🛠  Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.8.2
+        cli_config_credentials_hostname: app.terraform.io
+
+    # ─── Terraform workflow (identical to what you had) ───────────────
+    - name: terraform init
+      run: terraform -chdir=infra init -upgrade
+
+    - name: Pre-import DO resources
+      run: infra/pre_import.sh        # <- your existing import script
+
+    - name: terraform plan
+      run: terraform -chdir=infra plan -input=false
+
+    - name: terraform apply
+      run: terraform -chdir=infra apply -auto-approve -input=false
+
+    # ─── capture droplet IPs for later NameSilo update ────────────────
+    - name: Pull droplet IPs into env
+      shell: bash
+      run: |
+        IPS=$(terraform -chdir=infra output -json droplet_ips)
+        echo "ROOT_IP=$(  echo "$IPS" | jq -r '.root')"  >> "$GITHUB_ENV"
+        echo "UI_IP=$(    echo "$IPS" | jq -r '.ui')"    >> "$GITHUB_ENV"
+        echo "API_IP=$(   echo "$IPS" | jq -r '.api')"   >> "$GITHUB_ENV"
+        echo "ADMIN_IP=$( echo "$IPS" | jq -r '.admin')" >> "$GITHUB_ENV"
+
+    - name: 🔄 Post-apply NameSilo update
+      run: infra/update_namesilo.sh
+# ─────────────────────────────────────────────────────────────────────────────
