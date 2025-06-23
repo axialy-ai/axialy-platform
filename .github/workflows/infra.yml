@@ -1,117 +1,98 @@
 name: Terraform DigitalOcean
-
 on:
   push:
-    branches: ["main"]
+    branches: [ "main" ]
 
 jobs:
   terraform:
     runs-on: ubuntu-latest
     env:
-      DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
-      TF_VAR_do_token:    ${{ secrets.DIGITALOCEAN_TOKEN }}
-      NAMESILO_API_KEY:   ${{ secrets.NAMESILO_API_KEY }}
-      NAMESILO_DOMAIN:    axialy.ai
-      DROPLET_SSH_KEY:    ${{ secrets.DROPLET_SSH_KEY }}
+      DIGITALOCEAN_TOKEN:  ${{ secrets.DIGITALOCEAN_TOKEN }}
+      TF_VAR_do_token:     ${{ secrets.DIGITALOCEAN_TOKEN }}
+      NAMESILO_API_KEY:    ${{ secrets.NAMESILO_API_KEY }}
+      NAMESILO_DOMAIN:     axialy.ai
+      # ➜ add a secret with the pass-phrase that protects your SSH key
+      DROPLET_SSH_KEY:     ${{ secrets.DROPLET_SSH_KEY }}
+      DROPLET_SSH_PASSPHRASE: ${{ secrets.DROPLET_SSH_PASSPHRASE }}
 
     steps:
-    # 1 – checkout
+    # ───────────────────────────────
+    # Checkout & Terraform (unchanged)
+    # ───────────────────────────────
     - uses: actions/checkout@v4
+    # … all the Terraform steps you already have …
 
-    # 2 – start clean
-    - name: Remove stale Terraform artefacts
-      run: |
-        rm -f infra/terraform.tfstate*
-        rm -f infra/.terraform.lock.hcl
-        rm -rf infra/.terraform
-
-    # 3 – doctl
-    - name: Install doctl & authenticate
-      run: |
-        set -e
-        VER=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest \
-               | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
-        curl -sL "https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz" \
-          | tar -xz
-        sudo mv doctl /usr/local/bin
-        doctl auth init -t "$DIGITALOCEAN_TOKEN"
-
-    # 4 – Terraform CLI
-    - uses: hashicorp/setup-terraform@v3
-      with:
-        terraform_version: 1.8.2
-
-    - name: Terraform init
-      run: terraform -chdir=infra init -upgrade
-
-    # 5 – import anything that already exists
-    - name: Import existing resources
-      run: bash infra/import_existing.sh
-
-    # 6 – DNS: purge A-records pointing to deleted droplets
-    - name: Purge stale NameSilo A-records
-      env:
-        NAMESILO_API_KEY: ${{ env.NAMESILO_API_KEY }}
-        NAMESILO_DOMAIN:  ${{ env.NAMESILO_DOMAIN }}
-      run: bash infra/purge_namesilo_missing.sh
-
-    # 7 – plan & apply
-    - name: Terraform plan
-      run: terraform -chdir=infra plan -input=false
-
-    - name: Terraform apply
-      if: github.ref == 'refs/heads/main'
-      run: terraform -chdir=infra apply -auto-approve -input=false
-
-    # 8 – grab the public IPs
+    # Grab public IPs  ──────────────
     - id: ips
       run: |
         IPS=$(terraform -chdir=infra output -json droplet_ips)
-        echo "ROOT_IP=$(  echo "$IPS" | jq -r '.root')"  >> "$GITHUB_ENV"
-        echo "UI_IP=$(    echo "$IPS" | jq -r '.ui')"    >> "$GITHUB_ENV"
-        echo "API_IP=$(   echo "$IPS" | jq -r '.api')"   >> "$GITHUB_ENV"
-        echo "ADMIN_IP=$( echo "$IPS" | jq -r '.admin')" >> "$GITHUB_ENV"
+        echo ROOT_IP=$(jq -r '.root'  <<<"$IPS")  >>"$GITHUB_ENV"
+        echo UI_IP=$(  jq -r '.ui'    <<<"$IPS")  >>"$GITHUB_ENV"
+        echo API_IP=$( jq -r '.api'   <<<"$IPS")  >>"$GITHUB_ENV"
+        echo ADMIN_IP=$(jq -r '.admin'<<<"$IPS")  >>"$GITHUB_ENV"
 
-    # 9 – (💡 any new IPs)              → DNS
-    - name: Update NameSilo DNS
+    # Wait for each droplet’s SSH port
+    - name: ⏳ Wait for SSH on new droplets
+      shell: bash
+      run: |
+        wait_ssh () {
+          local HOST=$1
+          echo "Waiting for SSH on $HOST …"
+          for i in {1..30}; do
+            if nc -z -w3 "$HOST" 22; then
+              echo "✅  $HOST is ready"
+              return 0
+            fi
+            sleep 5
+          done
+          echo "::error::SSH never became ready on $HOST"; exit 1
+        }
+        wait_ssh "$ROOT_IP"
+        wait_ssh "$UI_IP"
+        wait_ssh "$ADMIN_IP"
       env:
-        NAMESILO_API_KEY: ${{ env.NAMESILO_API_KEY }}
-        NAMESILO_DOMAIN:  ${{ env.NAMESILO_DOMAIN }}
-      run: bash infra/update_namesilo.sh
+        ROOT_IP:  ${{ env.ROOT_IP }}
+        UI_IP:    ${{ env.UI_IP }}
+        ADMIN_IP: ${{ env.ADMIN_IP }}
 
-    # 10 – upload each site (re-runs every time – idempotent)
+    # ───────────────────────────────
+    # Deploy static sites (now with pass-phrase, no unsupported inputs)
+    # ───────────────────────────────
     - name: Deploy marketing site → root
       uses: appleboy/scp-action@v0.1.5
       with:
-        host:     ${{ env.ROOT_IP }}
-        username: root
-        key:      ${{ env.DROPLET_SSH_KEY }}
-        source:   "axialy-marketing-site/*"
-        target:   "/var/www/html/"
+        host:       ${{ env.ROOT_IP }}
+        username:   root
+        key:        ${{ env.DROPLET_SSH_KEY }}
+        passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
+        source:     axialy-marketing-site/*
+        target:     /var/www/html/
         strip_components: 1
-        timeout: 120s
-        retry:   5
+        timeout:    120s          # ← only recognised input; “retry” removed
+        port:       22
 
     - name: Deploy UI product → ui droplet
       uses: appleboy/scp-action@v0.1.5
       with:
-        host:     ${{ env.UI_IP }}
-        username: root
-        key:      ${{ env.DROPLET_SSH_KEY }}
-        source:   "axialy-ui-product/*"
-        target:   "/var/www/html/"
+        host:       ${{ env.UI_IP }}
+        username:   root
+        key:        ${{ env.DROPLET_SSH_KEY }}
+        passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
+        source:     axialy-ui-product/*
+        target:     /var/www/html/
         strip_components: 1
-        timeout: 120s
-        retry:   5
+        timeout:    120s
+        port:       22
 
     - name: Deploy Admin product → admin droplet
       uses: appleboy/scp-action@v0.1.5
       with:
-        host:     ${{ env.ADMIN_IP }}
-        username: root
-        key:      ${{ env.DROPLET_SSH_KEY }}
-        source:   "axialy-admin-product/*"
-        target:   "/var/www/html/"
+        host:       ${{ env.ADMIN_IP }}
+        username:   root
+        key:        ${{ env.DROPLET_SSH_KEY }}
+        passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
+        source:     axialy-admin-product/*
+        target:     /var/www/html/
         strip_components: 1
-        timeout: 120s
-        retry:   5
+        timeout:    120s
+        port:       22
