@@ -7,10 +7,9 @@ DOMAIN="${NAMESILO_DOMAIN:?Missing NAMESILO_DOMAIN}"
 json_records() {
   curl -s "https://www.namesilo.com/api/dnsListRecords?version=1&type=json&key=${KEY}&domain=${DOMAIN}" |
     jq -c '.namesilo.response.resource_record
-           | if type=="array" then .
+           | if type=="array"  then .
              elif type=="object" then [.]
-             else []
-             end'
+             else [] end'
 }
 
 upsert() {
@@ -22,7 +21,7 @@ upsert() {
   fi
 
   recs=$(json_records)
-  ids=$(jq -r '[.][] | select(.type=="A" and '"$jq_filter"') | .record_id' <<<"$recs")
+  ids=$(jq -r '.[] | select(.type=="A" and '"$jq_filter"') | .record_id' <<<"$recs")
 
   for id in $ids; do
     curl -s "https://www.namesilo.com/api/dnsDeleteRecord?version=1&type=json&key=${KEY}&domain=${DOMAIN}&rrid=${id}" >/dev/null
