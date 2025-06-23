@@ -1,3 +1,4 @@
+# infra/outputs.tf
 output "droplet_ips" {
   value = {
     admin = digitalocean_droplet.admin.ipv4_address
