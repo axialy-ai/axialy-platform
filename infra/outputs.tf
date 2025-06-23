@@ -3,7 +3,7 @@ output "droplet_ips" {
     admin = digitalocean_droplet.admin.ipv4_address
     ui    = digitalocean_droplet.ui.ipv4_address
     api   = digitalocean_droplet.api.ipv4_address
-    root  = digitalocean_droplet.root.ipv4_address   # apex / www
+    root  = digitalocean_droplet.root.ipv4_address
   }
 }
 
