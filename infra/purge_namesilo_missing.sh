@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# Purge NameSilo A-records that no longer map to an existing DigitalOcean
-# droplet, then add any A-records that are missing.
+# purge_namesilo_missing.sh
 #
-# Requires:
-#   - doctl (already installed earlier in the workflow)
-#   - jq
-#   - $NAMESILO_API_KEY  – NameSilo API key                  (env var)
-#   - $NAMESILO_DOMAIN   – e.g. axialy.ai                    (env var)
+# 1.  Get *all* DigitalOcean droplets  ➜  map  DROPLET_IP[host]=ip
+# 2.  Stream through every NameSilo A-record:
+#       • keep it   → if IP matches DROPLET_IP[host] **and** we haven't kept one already
+#       • delete it → otherwise (stale or duplicate)
+# 3.  Add a new A-record for any droplet host that still has none.
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -15,64 +14,49 @@ API="https://www.namesilo.com/api"
 DOMAIN="${NAMESILO_DOMAIN:?NAMESILO_DOMAIN not set}"
 KEY="${NAMESILO_API_KEY:?NAMESILO_API_KEY not set}"
 
-##############################################################################
-# 1. Gather live droplets  ➜  associative array  DROPLET_IPS[host]=ip
-##############################################################################
-echo "🔎 Fetching droplets from DigitalOcean…"
-declare -A DROPLET_IPS
-
+echo "🔎  Fetching droplets from DigitalOcean…"
+declare -A DROPLET_IP
 doctl compute droplet list -o json |
   jq -r '.[] |
          [.name,
-          (.networks.v4[] | select(.type=="public").ip_address)]
-         | @tsv' |
+          (.networks.v4[] | select(.type=="public").ip_address)] |
+         @tsv' |
   while IFS=$'\t' read -r NAME IP; do
-    DROPLET_IPS["$NAME"]="$IP"
+    # record the first IP we see for a host; ignore any later duplicates
+    [[ -z "${DROPLET_IP[$NAME]+x}" ]] && DROPLET_IP["$NAME"]="$IP"
   done
 
-##############################################################################
-# 2. Gather current NameSilo A-records
-#       ➜ NS_IPS[host]=ip      (for fast look-ups)
-#       ➜ NS_IDS[host]=record_id (needed for deletes)
-##############################################################################
-echo "🔎 Fetching A-records from NameSilo…"
-declare -A NS_IPS NS_IDS
+echo "🔎  Reconciling NameSilo zone…"
+declare -A RECORD_SEEN   # flags to make sure we keep at most one per host
 
 curl -s "$API/dnsListRecords?version=1&type=json&key=$KEY&domain=$DOMAIN" |
   jq -r '.reply.resource_record[]
          | select(.type=="A")
          | [.record_id, .host, .value] | @tsv' |
   while IFS=$'\t' read -r ID HOST IP; do
-    NS_IPS["$HOST"]="$IP"
-    NS_IDS["$HOST"]="$ID"
+    WANT_IP="${DROPLET_IP[$HOST]:-}"
+    if [[ -n "$WANT_IP" && "$IP" == "$WANT_IP" && -z "${RECORD_SEEN[$HOST]+x}" ]]; then
+      # This is the one (and only) record we keep for this host
+      RECORD_SEEN["$HOST"]=1
+    else
+      echo "🗑️   Deleting stale/duplicate  $HOST → $IP"
+      curl -s "$API/dnsDeleteRecord?version=1&type=json&key=$KEY&domain=$DOMAIN&rrid=$ID" >/dev/null
+    fi
   done
 
-##############################################################################
-# 3. Delete stale records – present in NameSilo but not in DO (or IP mismatch)
-##############################################################################
-for HOST in "${!NS_IPS[@]}"; do
-  if [[ -z "${DROPLET_IPS[$HOST]+x}" || "${DROPLET_IPS[$HOST]}" != "${NS_IPS[$HOST]}" ]]; then
-    echo "🗑️  Deleting stale record  $HOST → ${NS_IPS[$HOST]}"
-    curl -s \
-      "$API/dnsDeleteRecord?version=1&type=json&key=$KEY&domain=$DOMAIN&rrid=${NS_IDS[$HOST]}" \
-      >/dev/null
-  fi
-done
-
-##############################################################################
-# 4. Add missing records – present in DO but not yet in NameSilo
-##############################################################################
-for HOST in "${!DROPLET_IPS[@]}"; do
-  if [[ -z "${NS_IPS[$HOST]+x}" ]]; then
-    IP="${DROPLET_IPS[$HOST]}"
-    # NameSilo wants the host *relative* to the domain ("" or "@” for apex)
+# ---------------------------------------------------------------------------
+# Add missing records
+# ---------------------------------------------------------------------------
+for HOST in "${!DROPLET_IP[@]}"; do
+  if [[ -z "${RECORD_SEEN[$HOST]+x}" ]]; then
     RRHOST="${HOST%.$DOMAIN}"
-    [[ "$RRHOST" == "$HOST" ]] && RRHOST="@"   # apex record
-    echo "➕ Adding record         $HOST → $IP"
+    [[ "$RRHOST" == "$HOST" ]] && RRHOST="@"   # apex
+    IP="${DROPLET_IP[$HOST]}"
+    echo "➕  Adding               $HOST → $IP"
     curl -s \
       "$API/dnsAddRecord?version=1&type=json&key=$KEY&domain=$DOMAIN&rrtype=A&rrhost=$RRHOST&rrvalue=$IP&rrttl=3600" \
       >/dev/null
   fi
 done
 
-echo "✅  NameSilo zone is now fully in sync with live droplets."
+echo "✅  NameSilo zone now exactly mirrors the current droplet set."
