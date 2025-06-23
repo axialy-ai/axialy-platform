@@ -1,9 +1,8 @@
-# ── A-records we want in NameSilo ──────────────────────────────────────────────
 locals {
+  # hostname => IPv4 address (pulled from the droplet once it’s created)
   a_records = {
-    "@"   = digitalocean_droplet.root.ipv4_address   # apex → root droplet
-    "www" = digitalocean_droplet.root.ipv4_address   # www  → same root
-    "api" = digitalocean_droplet.api.ipv4_address    # api  → api droplet
+    "@"   = digitalocean_droplet.root.ipv4_address  # apex record
+    "api" = digitalocean_droplet.root.ipv4_address
   }
 }
 
@@ -12,15 +11,12 @@ resource "namesilo_dns_record" "a_records" {
 
   domain = var.ns_domain
   host   = each.key
-  value  = each.value
   type   = "A"
+  value  = each.value
   ttl    = 3600
 
-  lifecycle {
-    # re-create DNS record when the referenced droplet is replaced
-    replace_triggered_by = [
-      digitalocean_droplet.root,   # safe – resource ref, not each.value
-      digitalocean_droplet.api
-    ]
-  }
+  # only the droplet changing its IP should force replacement
+  replace_triggered_by = [
+    digitalocean_droplet.root
+  ]
 }
