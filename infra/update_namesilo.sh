@@ -5,9 +5,7 @@ set -euo pipefail
 KEY="${NAMESILO_API_KEY:?Missing NAMESILO_API_KEY}"
 DOMAIN="${NAMESILO_DOMAIN:?Missing NAMESILO_DOMAIN}"
 
-# — Helper: keep *exactly one* A-record for a host
-#   $1 = rrhost  ("" for apex)
-#   $2 = IPv4 address
+# Keep *exactly one* A-record for a host
 upsert () {
   local RRHOST="$1" IP="$2"
 
@@ -19,20 +17,20 @@ upsert () {
     JQ_FILTER='.host=="'"$RRHOST.$DOMAIN"'"'
   fi
 
-  # 1) List current A-records for that host
+  # 1 – list current A-records
   local IDS
   IDS=$(curl -s "https://www.namesilo.com/api/dnsListRecords?version=1&type=json&key=${KEY}&domain=${DOMAIN}" |
         jq -r '.namesilo.response.resource_record[]
                | select(.type=="A" and '"$JQ_FILTER"')
                | .record_id')
 
-  # 2) Delete them (if any)
+  # 2 – delete them
   for ID in $IDS; do
     curl -s "https://www.namesilo.com/api/dnsDeleteRecord?version=1&type=json&key=${KEY}&domain=${DOMAIN}&rrid=${ID}" \
       >/dev/null
   done
 
-  # 3) Wait until they’re really gone (≤ 5 s)
+  # 3 – wait until gone (≤ 5 s)
   for _ in {1..10}; do
     local LEFT
     LEFT=$(curl -s "https://www.namesilo.com/api/dnsListRecords?version=1&type=json&key=${KEY}&domain=${DOMAIN}" |
@@ -42,31 +40,21 @@ upsert () {
     sleep 0.5
   done
 
-  # 4) Add the single, correct record
+  # 4 – add single correct record
   local HOST_PARAM
-  if [[ -z "$RRHOST" ]]; then
-    HOST_PARAM=""
-  else
-    HOST_PARAM="rrhost=${RRHOST}&"
-  fi
+  [[ -z "$RRHOST" ]] && HOST_PARAM="" || HOST_PARAM="rrhost=${RRHOST}&"
 
   curl -s "https://www.namesilo.com/api/dnsAddRecord?version=1&type=json&key=${KEY}&domain=${DOMAIN}&${HOST_PARAM}rrvalue=${IP}&rrtype=A&rrttl=3600" \
     >/dev/null
 }
 
-# Fetch droplet IPs from Terraform outputs
+# Pull droplet IPs
 IPS_JSON=$(terraform -chdir=infra output -json droplet_ips)
 
-ADMIN_IP=$(echo "$IPS_JSON" | jq -r '.admin')
-UI_IP=$(echo   "$IPS_JSON" | jq -r '.ui')
-API_IP=$(echo  "$IPS_JSON" | jq -r '.api')
-ROOT_IP=$(echo "$IPS_JSON" | jq -r '.root')
+upsert "admin" "$(echo "$IPS_JSON" | jq -r '.admin')"
+upsert "ui"    "$(echo "$IPS_JSON" | jq -r '.ui')"
+upsert "api"   "$(echo "$IPS_JSON" | jq -r '.api')"
+upsert "www"   "$(echo "$IPS_JSON" | jq -r '.root')"
+upsert ""      "$(echo "$IPS_JSON" | jq -r '.root')"   # apex/root
 
-# Upsert all required records
-upsert "admin" "$ADMIN_IP"
-upsert "ui"    "$UI_IP"
-upsert "api"   "$API_IP"
-upsert "www"   "$ROOT_IP"
-upsert ""      "$ROOT_IP"   # apex / root record
-
-echo "✔  DNS records for ${DOMAIN} are up-to-date."
+echo "✓  DNS records for ${DOMAIN} are up-to-date."
