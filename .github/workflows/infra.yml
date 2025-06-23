@@ -1,55 +1,76 @@
+# GitHub Action – keeps DigitalOcean & NameSilo perfectly in-sync
 name: Terraform DigitalOcean
 
 on:
   push:
     branches: [ "main" ]
 
+env:
+  DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+  TF_VAR_do_token:    ${{ secrets.DIGITALOCEAN_TOKEN }}
+  NAMESILO_API_KEY:   ${{ secrets.NAMESILO_API_KEY }}
+  NAMESILO_DOMAIN:    axialy.ai
+  DROPLET_SSH_KEY:    ${{ secrets.DROPLET_SSH_KEY }}
+
 jobs:
   terraform:
     runs-on: ubuntu-latest
-    env:
-      DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
-      TF_VAR_do_token:    ${{ secrets.DIGITALOCEAN_TOKEN }}
-      NAMESILO_API_KEY:   ${{ secrets.NAMESILO_API_KEY }}
-      NAMESILO_DOMAIN:    axialy.ai
-      DROPLET_SSH_KEY:    ${{ secrets.DROPLET_SSH_KEY }}
 
     steps:
+    # 1 ─ Checkout
     - uses: actions/checkout@v4
 
+    # 2 ─ Detect marketing-site changes (so we only SCP when needed)
+    - id: filter
+      uses: dorny/paths-filter@v3
+      with:
+        list-files: none
+        initial-fetch-depth: 100
+        filters: |
+          marketing:
+            - 'axialy-marketing-site/**'
+
+    # 3 ─ Install & auth doctl
+    - name: Install doctl
+      run: |
+        set -e
+        VER=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest \
+                | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
+        curl -sL "https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz" \
+          | tar -xz
+        sudo mv doctl /usr/local/bin
+    - name: doctl auth
+      run: doctl auth init -t "$DIGITALOCEAN_TOKEN"
+
+    # 4 ─ **NEW** • pre-clean any stale DNS for droplets that *don’t* exist yet
+    - name: Delete stale DNS records (missing droplets)
+      env:
+        DOMAIN: ${{ env.NAMESILO_DOMAIN }}
+      run: |
+        bash infra/cleanup_namesilo.sh
+
+    # 5 ─ Terraform CLI
     - uses: hashicorp/setup-terraform@v3
       with:
         terraform_version: 1.8.2
 
-    - name: Install doctl
-      run: |
-        VER=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
-        curl -sL "https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz" | tar -xz
-        sudo mv doctl /usr/local/bin
-
-    - name: Authenticate doctl
-      run: doctl auth init -t "$DIGITALOCEAN_TOKEN"
-
-    - name: Terraform Init
+    - name: Terraform init
       run: terraform -chdir=infra init -upgrade
 
-    - name: Identify missing droplets & delete DNS A records
-      env:
-        KEY: ${{ secrets.NAMESILO_API_KEY }}
-        DOMAIN: axialy.ai
-      run: |
-        chmod +x infra/delete_dns_records.sh
-        ./infra/delete_dns_records.sh
+    # 6 ─ Import resources already alive in DO
+    - name: Import existing resources
+      run: bash infra/import_existing.sh
 
-    - name: Terraform Plan
+    # 7 ─ Plan / apply
+    - name: Terraform plan
       run: terraform -chdir=infra plan -input=false
 
-    - name: Terraform Apply
+    - name: Terraform apply
       if: github.ref == 'refs/heads/main'
       run: terraform -chdir=infra apply -auto-approve -input=false
 
-    - name: Terraform Outputs
-      id: ips
+    # 8 ─ Capture droplet IPs
+    - id: ips
       run: |
         IPS=$(terraform -chdir=infra output -json droplet_ips)
         echo "ROOT_IP=$(  echo "$IPS" | jq -r '.root')"  >> "$GITHUB_ENV"
@@ -57,8 +78,22 @@ jobs:
         echo "API_IP=$(   echo "$IPS" | jq -r '.api')"   >> "$GITHUB_ENV"
         echo "ADMIN_IP=$( echo "$IPS" | jq -r '.admin')" >> "$GITHUB_ENV"
 
-    - name: Update NameSilo DNS Records
+    # 9 ─ Upsert the *single* correct A-record for each host
+    - name: Update NameSilo DNS
       if: github.ref == 'refs/heads/main'
+      env:
+        DOMAIN: ${{ env.NAMESILO_DOMAIN }}
       run: |
-        chmod +x infra/update_namesilo.sh
-        ./infra/update_namesilo.sh
+        bash infra/update_namesilo.sh
+
+    # 10 ─ Deploy marketing site (only when that folder changed)
+    - name: Deploy axialy-marketing-site to root droplet
+      if: steps.filter.outputs.marketing == 'true'
+      uses: appleboy/scp-action@v0.1.5
+      with:
+        host:   ${{ env.ROOT_IP }}
+        username: root
+        key:     ${{ env.DROPLET_SSH_KEY }}
+        source:  "axialy-marketing-site/*"
+        target:  "/var/www/html/"
+        strip_components: 1
