@@ -1,13 +1,10 @@
-variable "do_token" {
-  type        = string
-  sensitive   = true
-}
+# DigitalOcean
+variable "do_token"      { description = "DigitalOcean API token"   type = string  sensitive = true }
 
-variable "ns_key" {          # populated from TF_VAR_ns_key (GitHub env)
-  type        = string
-  sensitive   = true
-}
+# NameSilo
+variable "ns_key"        { description = "NameSilo API key"         type = string  sensitive = true }
+variable "ns_domain"     { description = "Managed domain name"      type = string  default = "axialy.ai" }
 
-variable "ns_domain" {       # populated from TF_VAR_ns_domain
-  type = string
-}
+# misc
+variable "region"        { description = "Region to create resources in" type = string  default = "sfo3" }
+variable "droplet_size"  { description = "Droplet size slug"             type = string  default = "s-1vcpu-1gb" }
