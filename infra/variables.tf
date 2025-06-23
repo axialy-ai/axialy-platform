@@ -1,18 +1,13 @@
 variable "do_token" {
-  description = "DigitalOcean API token"
   type        = string
   sensitive   = true
 }
 
-variable "region" {
-  description = "Region to create resources in"
+variable "ns_key" {          # populated from TF_VAR_ns_key (GitHub env)
   type        = string
-  default     = "sfo3"
+  sensitive   = true
 }
 
-variable "droplet_size" {
-  description = "Droplet size slug"
-  type        = string
-  default     = "s-1vcpu-1gb"
+variable "ns_domain" {       # populated from TF_VAR_ns_domain
+  type = string
 }
-
