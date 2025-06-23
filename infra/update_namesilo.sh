@@ -1,98 +1,123 @@
 #!/usr/bin/env bash
 # infra/update_namesilo.sh
 # ---------------------------------------------------------------------------
-# Creates / updates exactly one A-record for each droplet that Terraform
-# manages.  Safe-no-op if the record already points at the correct IP.
+# Sync NameSilo A-records with the 4 droplets Terraform manages.
+#   • no “nuke-all”: only touch hosts Terraform just created/updated
+#   • zero duplicates left behind
+#   • exits non-zero on ANY NameSilo error so the workflow fails visibly
 #
-# ENV expected (exported earlier in the workflow)
-#   NAMESILO_API_KEY   ▸ Your API key     (already set in workflow env)
-#   NAMESILO_DOMAIN    ▸ axialy.ai        (already set in workflow env)
-#   ROOT_IP  UI_IP  API_IP  ADMIN_IP      ▸ from terraform output
+# ENV already set by the workflow ----------------------------
+#   NAMESILO_API_KEY        Your key
+#   NAMESILO_DOMAIN         axialy.ai
+#   ROOT_IP  UI_IP  API_IP  ADMIN_IP   (exported from terraform output)
 # ---------------------------------------------------------------------------
 
 set -euo pipefail
 
-# 1) ----------------------------------------------------------------------------
-# mapping “terraform resource name” ➜ fqdn ➜ corresponding IP variable
-declare -A HOST_MAP=(
-  [root]="axialy.ai"
-  [ui]="ui.axialy.ai"
-  [api]="api.axialy.ai"
-  [admin]="admin.axialy.ai"
+DOMAIN="${NAMESILO_DOMAIN}"
+API_KEY="${NAMESILO_API_KEY}"
+
+# ── 1. Which host ↔︎ droplet IP? ────────────────────────────────────────────
+declare -A HOSTPARTS=(
+  [root]="@"      # apex record – NameSilo wants '@'
+  [ui]="ui"
+  [api]="api"
+  [admin]="admin"
 )
 
-declare -A IP_VAR_MAP=(
+declare -A IPVARS=(
   [root]="ROOT_IP"
   [ui]="UI_IP"
   [api]="API_IP"
   [admin]="ADMIN_IP"
 )
 
-# 2) ----------------------------------------------------------------------------
-# Fetch *all* existing A-records once (JSON)
-ALL=$(curl -s \
-  "https://www.namesilo.com/api/dnsListRecords?version=1&type=json&key=${NAMESILO_API_KEY}&domain=${NAMESILO_DOMAIN}")
+# ── 2. Pull ALL existing A-records once (JSON) ──────────────────────────────
+ALL_REC=$(curl -s \
+  "https://www.namesilo.com/api/dnsListRecords?version=1&type=json&key=${API_KEY}&domain=${DOMAIN}")
 
-# 3) ----------------------------------------------------------------------------
-update_or_add() {
-  local fqdn=$1
-  local want_ip=$2
+# helper → true if NameSilo reply was success (code 300)
+ok() { jq -e '.reply.code=="300"' >/dev/null; }
 
-  # Does a correct A-record already exist?
-  correct=$(echo "$ALL" | jq -r \
-        --arg F "$fqdn" --arg IP "$want_ip" '
-        .reply.resource_record[]
-        | select(.type=="A" and .host==$F and .value==$IP)
-        | .record_id')
-  if [[ -n "$correct" ]]; then
-    echo "✓  ${fqdn} already points to ${want_ip}"
+# ── 3. Core routine: ensure single correct record per host ──────────────────
+sync_host() {
+  local host_part="$1" want_ip="$2"
+
+  # The host value as NameSilo stores it (it *expands* '@' to the FQDN)
+  # Accept any of these as “belongs to this host”
+  host_regex=''
+  if [[ "$host_part" == "@" ]]; then
+    host_regex="^${DOMAIN}(\\.${DOMAIN})*\$"        # apex & doubled variants
+  else
+    host_regex="^${host_part}(\\.${DOMAIN})+\$"     # ui.axialy.ai plus any doubled
+  fi
+
+  # collect record IDs for *this* host
+  mapfile -t rec_ids < <(echo "$ALL_REC" | jq -r \
+      --arg re "$host_regex" \
+      '.reply.resource_record[]
+       | select(.type=="A" and (.host|test($re)))
+       | .record_id')
+
+  # is one of them already correct?
+  correct_id=''
+  for rid in "${rec_ids[@]:-}"; do
+    val=$(echo "$ALL_REC" | jq -r \
+          --arg rid "$rid" \
+          '.reply.resource_record[] | select(.record_id==$rid) | .value')
+    if [[ "$val" == "$want_ip" ]]; then
+      correct_id="$rid"
+      break
+    fi
+  done
+
+  # -------------------------------------------------------------------------
+  if [[ -n "$correct_id" ]]; then
+    # keep EXACTLY this record → delete any extra duplicates
+    for rid in "${rec_ids[@]}"; do
+      [[ "$rid" == "$correct_id" ]] && continue
+      echo "🗑️  $host_part : deleting duplicate rrid=$rid"
+      curl -s \
+        "https://www.namesilo.com/api/dnsDeleteRecord?version=1&type=json&key=${API_KEY}&domain=${DOMAIN}&rrid=${rid}" \
+        | ok || { echo "NameSilo error while deleting $rid"; exit 1; }
+    done
+    echo "✓  $host_part already correct (${want_ip})"
     return
   fi
 
-  # Gather *all* A-records for this FQDN (could be 0, 1, or many/wrong)
-  mapfile -t rec_ids < <(echo "$ALL" | jq -r \
-        --arg F "$fqdn" '.reply.resource_record[]
-        | select(.type=="A" and .host==$F)
-        | .record_id')
-
+  # -------------------------------------------------------------------------
   if ((${#rec_ids[@]})); then
-    # Update the first record, delete any extras
+    # update the first wrong record, then delete the rest
     primary=${rec_ids[0]}
-    echo -n "↻  Updating ${fqdn} (${primary}) → ${want_ip} … "
-    code=$(curl -s \
-      "https://www.namesilo.com/api/dnsUpdateRecord?version=1&type=json&key=${NAMESILO_API_KEY}&domain=${NAMESILO_DOMAIN}&rrid=${primary}&rrhost=${fqdn}&rrvalue=${want_ip}&rrttl=3600" \
-      | jq -r '.reply.code')
-    [[ "$code" == "300" ]] && echo "done" || { echo "FAILED (code $code)"; exit 1; }
+    echo "↻  $host_part : updating rrid=$primary → ${want_ip}"
+    curl -s \
+      "https://www.namesilo.com/api/dnsUpdateRecord?version=1&type=json&key=${API_KEY}&domain=${DOMAIN}&rrid=${primary}&rrhost=${host_part}&rrvalue=${want_ip}&rrttl=3600" \
+      | ok || { echo "NameSilo update failed ($primary)"; exit 1; }
 
-    # Remove duplicates, if any
-    for ((i=1;i<${#rec_ids[@]};i++)); do
-      rid=${rec_ids[i]}
-      echo -n "   deleting duplicate ${rid} … "
+    for rid in "${rec_ids[@]:1}"; do
+      echo "🗑️  $host_part : removing stale dup rrid=$rid"
       curl -s \
-        "https://www.namesilo.com/api/dnsDeleteRecord?version=1&type=json&key=${NAMESILO_API_KEY}&domain=${NAMESILO_DOMAIN}&rrid=${rid}" \
-        | jq -e '.reply.code=="300"' >/dev/null && echo ok || { echo FAIL; exit 1; }
+        "https://www.namesilo.com/api/dnsDeleteRecord?version=1&type=json&key=${API_KEY}&domain=${DOMAIN}&rrid=${rid}" \
+        | ok || { echo "NameSilo error deleting $rid"; exit 1; }
     done
   else
-    # No record → add one
-    echo -n "+  Adding ${fqdn} → ${want_ip} … "
-    code=$(curl -s \
-      "https://www.namesilo.com/api/dnsAddRecord?version=1&type=json&key=${NAMESILO_API_KEY}&domain=${NAMESILO_DOMAIN}&rrtype=A&rrhost=${fqdn}&rrvalue=${want_ip}&rrttl=3600" \
-      | jq -r '.reply.code')
-    [[ "$code" == "300" ]] && echo "done" || { echo "FAILED (code $code)"; exit 1; }
+    # no record at all → add one
+    echo "+  $host_part : adding ${want_ip}"
+    curl -s \
+      "https://www.namesilo.com/api/dnsAddRecord?version=1&type=json&key=${API_KEY}&domain=${DOMAIN}&rrtype=A&rrhost=${host_part}&rrvalue=${want_ip}&rrttl=3600" \
+      | ok || { echo "NameSilo add failed ($host_part)"; exit 1; }
   fi
 }
 
-# 4) ----------------------------------------------------------------------------
-echo "── Synchronising NameSilo A-records ──────────────────────────────────────"
-for res in "${!HOST_MAP[@]}"; do
-  fqdn=${HOST_MAP[$res]}
-  ip_var=${IP_VAR_MAP[$res]}
-  want_ip=${!ip_var:-""}
+# ── 4. Iterate through the four droplets ────────────────────────────────────
+echo "── Syncing NameSilo DNS for ${DOMAIN} ───────────────────────────"
+for res in "${!HOSTPARTS[@]}"; do
+  ip_var=${IPVARS[$res]}
+  want_ip=${!ip_var:-}
 
-  # If Terraform didn't output an IP for this droplet (because it wasn't created),
-  # skip it entirely.
+  # if Terraform didn’t output an IP (droplet not created) → skip
   [[ -z "$want_ip" || "$want_ip" == "null" ]] && continue
 
-  update_or_add "$fqdn" "$want_ip"
+  sync_host "${HOSTPARTS[$res]}" "$want_ip"
 done
-echo "──────────────────────────────────────────────────────────────────────────"
+echo "────────────────────────────────────────────────────────────────"
