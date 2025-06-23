@@ -2,7 +2,7 @@ name: Terraform DigitalOcean
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
 
 jobs:
   terraform:
@@ -15,29 +15,18 @@ jobs:
       DROPLET_SSH_KEY:    ${{ secrets.DROPLET_SSH_KEY }}
 
     steps:
-
-    # 1 – Checkout
+    # 1 – checkout
     - uses: actions/checkout@v4
 
-    # 2 – Wipe any local artefacts that could resurrect old providers
+    # 2 – start clean
     - name: Remove stale Terraform artefacts
       run: |
         rm -f infra/terraform.tfstate*
         rm -f infra/.terraform.lock.hcl
         rm -rf infra/.terraform
 
-    # 3 – Detect marketing-site changes
-    - id: filter
-      uses: dorny/paths-filter@v3
-      with:
-        list-files: none
-        initial-fetch-depth: 100
-        filters: |
-          marketing:
-            - 'axialy-marketing-site/**'
-
-    # 4 – Install doctl & authenticate
-    - name: Install doctl
+    # 3 – doctl
+    - name: Install doctl & authenticate
       run: |
         set -e
         VER=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest \
@@ -45,11 +34,9 @@ jobs:
         curl -sL "https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz" \
           | tar -xz
         sudo mv doctl /usr/local/bin
+        doctl auth init -t "$DIGITALOCEAN_TOKEN"
 
-    - name: doctl auth
-      run: doctl auth init -t "$DIGITALOCEAN_TOKEN"
-
-    # 5 – Terraform CLI
+    # 4 – Terraform CLI
     - uses: hashicorp/setup-terraform@v3
       with:
         terraform_version: 1.8.2
@@ -57,18 +44,18 @@ jobs:
     - name: Terraform init
       run: terraform -chdir=infra init -upgrade
 
-    # 6 – Import any existing DigitalOcean resources
+    # 5 – import anything that already exists
     - name: Import existing resources
       run: bash infra/import_existing.sh
 
-    # 7 – Purge DNS A-records for droplets that are *missing* (gives prop time)
+    # 6 – DNS: purge A-records pointing to deleted droplets
     - name: Purge stale NameSilo A-records
       env:
         NAMESILO_API_KEY: ${{ env.NAMESILO_API_KEY }}
         NAMESILO_DOMAIN:  ${{ env.NAMESILO_DOMAIN }}
       run: bash infra/purge_namesilo_missing.sh
 
-    # 8 – Plan & apply
+    # 7 – plan & apply
     - name: Terraform plan
       run: terraform -chdir=infra plan -input=false
 
@@ -76,7 +63,7 @@ jobs:
       if: github.ref == 'refs/heads/main'
       run: terraform -chdir=infra apply -auto-approve -input=false
 
-    # 9 – Expose droplet IPs
+    # 8 – grab the public IPs
     - id: ips
       run: |
         IPS=$(terraform -chdir=infra output -json droplet_ips)
@@ -85,22 +72,46 @@ jobs:
         echo "API_IP=$(   echo "$IPS" | jq -r '.api')"   >> "$GITHUB_ENV"
         echo "ADMIN_IP=$( echo "$IPS" | jq -r '.admin')" >> "$GITHUB_ENV"
 
-    # 10 – Add the single, correct DNS records
+    # 9 – (💡 any new IPs)              → DNS
     - name: Update NameSilo DNS
-      if: github.ref == 'refs/heads/main'
       env:
         NAMESILO_API_KEY: ${{ env.NAMESILO_API_KEY }}
         NAMESILO_DOMAIN:  ${{ env.NAMESILO_DOMAIN }}
       run: bash infra/update_namesilo.sh
 
-    # 11 – Deploy marketing site if it changed
-    - name: Deploy axialy-marketing-site to root droplet
-      if: steps.filter.outputs.marketing == 'true'
+    # 10 – upload each site (re-runs every time – idempotent)
+    - name: Deploy marketing site → root
       uses: appleboy/scp-action@v0.1.5
       with:
-        host:   ${{ env.ROOT_IP }}
+        host:     ${{ env.ROOT_IP }}
         username: root
-        key:     ${{ env.DROPLET_SSH_KEY }}
-        source:  "axialy-marketing-site/*"
-        target:  "/var/www/html/"
+        key:      ${{ env.DROPLET_SSH_KEY }}
+        source:   "axialy-marketing-site/*"
+        target:   "/var/www/html/"
         strip_components: 1
+        timeout: 120s
+        retry:   5
+
+    - name: Deploy UI product → ui droplet
+      uses: appleboy/scp-action@v0.1.5
+      with:
+        host:     ${{ env.UI_IP }}
+        username: root
+        key:      ${{ env.DROPLET_SSH_KEY }}
+        source:   "axialy-ui-product/*"
+        target:   "/var/www/html/"
+        strip_components: 1
+        timeout: 120s
+        retry:   5
+
+    - name: Deploy Admin product → admin droplet
+      uses: appleboy/scp-action@v0.1.5
+      with:
+        host:     ${{ env.ADMIN_IP }}
+        username: root
+        key:      ${{ env.DROPLET_SSH_KEY }}
+        source:   "axialy-admin-product/*"
+        target:   "/var/www/html/"
+        strip_components: 1
+        timeout: 120s
+        retry:   5
