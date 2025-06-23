@@ -1,4 +1,3 @@
-# ── Input variables ────────────────────────────────────────────────────────────
 variable "do_token" {
   description = "DigitalOcean API token"
   type        = string
@@ -12,6 +11,6 @@ variable "ns_key" {
 }
 
 variable "ns_domain" {
-  description = "Domain name managed at NameSilo"
+  description = "Domain managed at NameSilo (apex, e.g. example.com)"
   type        = string
 }
