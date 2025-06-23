@@ -2,77 +2,78 @@
 set -euo pipefail
 
 ###############################################################################
-# Required environment variables (fail fast if any are missing)
+# required env-vars
 ###############################################################################
-: "${NAMESILO_API_KEY:?Need NAMESILO_API_KEY}"
-: "${NAMESILO_DOMAIN:?Need NAMESILO_DOMAIN}"
-: "${ROOT_IP:?Need ROOT_IP}"
-: "${UI_IP:?Need UI_IP}"
-: "${API_IP:?Need API_IP}"
-: "${ADMIN_IP:?Need ADMIN_IP}"
+: "${NAMESILO_API_KEY:?}"
+: "${NAMESILO_DOMAIN:?}"
+: "${ROOT_IP:?}"
+: "${UI_IP:?}"
+: "${API_IP:?}"
+: "${ADMIN_IP:?}"
 
 ###############################################################################
-# Desired DNS state
+# desired state – use “@” for zone-apex to avoid empty-key bug
 ###############################################################################
-declare -A DESIRED
-DESIRED[""]="$ROOT_IP"          # apex record (e.g. axialy.ai)
-DESIRED["ui"]="$UI_IP"          # ui.axialy.ai
-DESIRED["api"]="$API_IP"        # api.axialy.ai
-DESIRED["admin"]="$ADMIN_IP"    # admin.axialy.ai
+declare -A WANT=(
+  ["@"]="$ROOT_IP"      # axialy.ai
+  ["ui"]="$UI_IP"       # ui.axialy.ai
+  ["api"]="$API_IP"     # api.axialy.ai
+  ["admin"]="$ADMIN_IP" # admin.axialy.ai
+)
 
 API_ROOT="https://www.namesilo.com/api"
 
 ###############################################################################
-# Fetch current A-records
+# current A records
 ###############################################################################
-xml=$(curl -s "${API_ROOT}/dnsListRecords?version=1&type=xml&key=${NAMESILO_API_KEY}&domain=${NAMESILO_DOMAIN}")
+xml="$(curl -s "${API_ROOT}/dnsListRecords?version=1&type=xml&key=${NAMESILO_API_KEY}&domain=${NAMESILO_DOMAIN}")"
 
-# Extract host|value|record_id for every A record (requires xmlstarlet, present on the GH-Actions image)
-mapfile -t records < <(
+mapfile -t recs < <(
   xmlstarlet sel -t -m '//resource_record[type="A"]' \
     -v 'host' -o '|' -v 'value' -o '|' -v 'record_id' -n <<<"$xml"
 )
 
 ###############################################################################
-# Work out which records to keep, delete, or create
+# decide keep / delete
 ###############################################################################
 declare -A keep
-declare -a delete_ids
+delete_ids=()
 
-for rec in "${records[@]}"; do
-  IFS='|' read -r host value rid <<<"$rec"
-  label=${host%%.${NAMESILO_DOMAIN}}          # strip domain to get sub-label
-  [[ "$label" == "$host" ]] && label=""       # apex has no sub-label
+for r in "${recs[@]}"; do
+  IFS='|' read -r host val rid <<<"$r"
 
-  desired=${DESIRED[$label]:-}
+  if [[ "$host" == "$NAMESILO_DOMAIN" ]]; then
+    label="@"
+  else
+    label="${host/%.${NAMESILO_DOMAIN}}"
+  fi
 
-  if [[ -n "$desired" ]]; then
-    if [[ "$value" == "$desired" && -z "${keep[$label]:-}" ]]; then
-      keep[$label]=$rid                       # first correct record ⇒ keep
+  want="${WANT[$label]:-}"
+
+  if [[ -n "$want" ]]; then
+    if [[ "$val" == "$want" && -z "${keep[$label]:-}" ]]; then
+      keep[$label]="$rid"            # first correct one → keep
     else
-      delete_ids+=("$rid")                    # duplicates or wrong IPs ⇒ delete
+      delete_ids+=("$rid")           # duplicates / wrong IPs
     fi
   fi
 done
 
 ###############################################################################
-# Delete the extras
+# delete extras
 ###############################################################################
 for rid in "${delete_ids[@]}"; do
-  echo "Deleting rrid=$rid"
   curl -s "${API_ROOT}/dnsDeleteRecord?version=1&type=xml&key=${NAMESILO_API_KEY}&domain=${NAMESILO_DOMAIN}&rrid=${rid}" >/dev/null
 done
 
 ###############################################################################
-# Ensure every desired record exists
+# add any missing
 ###############################################################################
-for label in "${!DESIRED[@]}"; do
-  if [[ -z "${keep[$label]:-}" ]]; then
-    host=$([[ -z "$label" ]] && echo "$NAMESILO_DOMAIN" || echo "${label}.${NAMESILO_DOMAIN}")
-    ip=${DESIRED[$label]}
-    echo "Adding ${host} → ${ip}"
-    curl -s "${API_ROOT}/dnsAddRecord?version=1&type=xml&key=${NAMESILO_API_KEY}&domain=${NAMESILO_DOMAIN}&rrtype=A&rrhost=${host}&rrvalue=${ip}&rrttl=3600" >/dev/null
-  fi
-done
+for label in "${!WANT[@]}"; do
+  [[ -n "${keep[$label]:-}" ]] && continue
 
-echo "✅ NameSilo DNS records are now exactly as desired."
+  rrhost=$([[ "$label" == "@" ]] && echo "$NAMESILO_DOMAIN" || echo "${label}.${NAMESILO_DOMAIN}")
+  ip="${WANT[$label]}"
+
+  curl -s "${API_ROOT}/dnsAddRecord?version=1&type=xml&key=${NAMESILO_API_KEY}&domain=${NAMESILO_DOMAIN}&rrtype=A&rrhost=${rrhost}&rrvalue=${ip}&rrttl=3600" >/dev/null
+done
