@@ -46,7 +46,7 @@ jobs:
           username:   root
           key:        ${{ env.DROPLET_SSH_KEY }}
           passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
-          source:     axialy-ui-product/*
+          source:     axialy-admin-product/*
           target:     /var/www/html/
           strip_components: 1
           timeout:    120s
