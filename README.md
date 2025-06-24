@@ -1,2 +1,2 @@
 # axialy-platform
-## Test G6
+## Test G7
