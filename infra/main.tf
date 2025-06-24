@@ -1,16 +1,12 @@
 ###############################################################################
-#  infra/main.tf – fixed (2025-06-24)
-#  – Removes bad templatefile provider
-#  – Uses a plain heredoc for cloud-init
+#  infra/main.tf  ·  2025-06-24
+#  – NO data "digitalocean_ssh_key" block (avoids the “name required” error)
+#  – Droplets take the fingerprint straight from var.ssh_fingerprint
 ###############################################################################
 
 #########################
-#  Data & locals
+#  Locals
 #########################
-
-data "digitalocean_ssh_key" "this" {
-  fingerprint = var.ssh_fingerprint
-}
 
 locals {
   cloud_init = <<-EOF
@@ -23,7 +19,7 @@ locals {
       - ufw allow 'Nginx Full' || true
   EOF
 
-  tags_common = ["axialy"]
+  common_tags = ["axialy"]
 }
 
 #########################
@@ -42,47 +38,43 @@ resource "digitalocean_project" "axialy" {
 #########################
 
 resource "digitalocean_droplet" "root" {
-  name   = var.domain
-  region = var.region
-  size   = var.droplet_size
-  image  = var.droplet_image
-
-  ssh_keys  = [data.digitalocean_ssh_key.this.id]
-  tags      = concat(local.tags_common, ["www"])
-  user_data = local.cloud_init
+  name       = var.domain
+  region     = var.region
+  size       = var.droplet_size
+  image      = var.droplet_image
+  ssh_keys   = [var.ssh_fingerprint]
+  tags       = concat(local.common_tags, ["www"])
+  user_data  = local.cloud_init
 }
 
 resource "digitalocean_droplet" "ui" {
-  name   = "ui.${var.domain}"
-  region = var.region
-  size   = var.droplet_size
-  image  = var.droplet_image
-
-  ssh_keys  = [data.digitalocean_ssh_key.this.id]
-  tags      = concat(local.tags_common, ["ui"])
-  user_data = local.cloud_init
+  name       = "ui.${var.domain}"
+  region     = var.region
+  size       = var.droplet_size
+  image      = var.droplet_image
+  ssh_keys   = [var.ssh_fingerprint]
+  tags       = concat(local.common_tags, ["ui"])
+  user_data  = local.cloud_init
 }
 
 resource "digitalocean_droplet" "admin" {
-  name   = "admin.${var.domain}"
-  region = var.region
-  size   = var.droplet_size
-  image  = var.droplet_image
-
-  ssh_keys  = [data.digitalocean_ssh_key.this.id]
-  tags      = concat(local.tags_common, ["admin"])
-  user_data = local.cloud_init
+  name       = "admin.${var.domain}"
+  region     = var.region
+  size       = var.droplet_size
+  image      = var.droplet_image
+  ssh_keys   = [var.ssh_fingerprint]
+  tags       = concat(local.common_tags, ["admin"])
+  user_data  = local.cloud_init
 }
 
 resource "digitalocean_droplet" "api" {
-  name   = "api.${var.domain}"
-  region = var.region
-  size   = var.droplet_size
-  image  = var.droplet_image
-
-  ssh_keys  = [data.digitalocean_ssh_key.this.id]
-  tags      = concat(local.tags_common, ["api"])
-  user_data = local.cloud_init
+  name       = "api.${var.domain}"
+  region     = var.region
+  size       = var.droplet_size
+  image      = var.droplet_image
+  ssh_keys   = [var.ssh_fingerprint]
+  tags       = concat(local.common_tags, ["api"])
+  user_data  = local.cloud_init
 }
 
 #########################
