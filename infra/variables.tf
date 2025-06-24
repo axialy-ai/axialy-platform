@@ -4,6 +4,12 @@ variable "do_token" {
   sensitive   = true
 }
 
+# 👉 NEW – fingerprint of the SSH key to inject into each droplet
+variable "ssh_fingerprint" {
+  description = "Fingerprint of the deploy SSH key (from DO → Settings → Security → SSH Keys)"
+  type        = string
+}
+
 variable "region" {
   description = "Region to create resources in"
   type        = string
