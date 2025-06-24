@@ -6,7 +6,7 @@ locals {
   size   = "s-1vcpu-1gb"
   image  = "ubuntu-22-04-x64"
 
-  # same cloud-init for every public-facing droplet
+  # bootstrap script for droplets that should expose a static site
   nginx_cloud_init = <<-EOF
     #!/bin/bash
     set -e
@@ -17,9 +17,9 @@ locals {
   EOF
 }
 
-# ────────────────────────────────────────────────────────────────────────────
+########################################
 # Project
-# ────────────────────────────────────────────────────────────────────────────
+########################################
 resource "digitalocean_project" "axialy" {
   name        = "Axialy"
   description = "Project that hosts the Axialy platform"
@@ -27,9 +27,9 @@ resource "digitalocean_project" "axialy" {
   environment = "Production"
 }
 
-# ────────────────────────────────────────────────────────────────────────────
-# Droplets  (ssh_keys = [var.ssh_fingerprint])
-# ────────────────────────────────────────────────────────────────────────────
+########################################
+# Droplets
+########################################
 resource "digitalocean_droplet" "admin" {
   name       = "admin.axialy.ai"
   region     = local.region
@@ -50,16 +50,15 @@ resource "digitalocean_droplet" "ui" {
   ssh_keys   = [var.ssh_fingerprint]
 }
 
+# ------------  API droplet ------------
+# - no cloud-init script here – we want YOUR build
+#   (deploy-api.yml will rsync the files)
 resource "digitalocean_droplet" "api" {
   name       = "api.axialy.ai"
   region     = local.region
   size       = local.size
   image      = local.image
   tags       = ["axialy", "api"]
-
-  # add the same bootstrap script so it comes up with NGINX + placeholder page
-  user_data  = local.nginx_cloud_init   # ← ADDED
-
   ssh_keys   = [var.ssh_fingerprint]
 }
 
@@ -73,10 +72,9 @@ resource "digitalocean_droplet" "root" {
   ssh_keys   = [var.ssh_fingerprint]
 }
 
-# ────────────────────────────────────────────────────────────────────────────
-# Managed MySQL
-# (unchanged)
-# ────────────────────────────────────────────────────────────────────────────
+########################################
+# Managed MySQL (unchanged)
+########################################
 resource "digitalocean_database_cluster" "mysql" {
   name       = "axialy-db-cluster"
   engine     = "mysql"
@@ -97,10 +95,9 @@ resource "digitalocean_database_db" "ui" {
   name       = "Axialy_UI"
 }
 
-# ────────────────────────────────────────────────────────────────────────────
-# Attach everything to the project
-# (unchanged)
-# ────────────────────────────────────────────────────────────────────────────
+########################################
+# Attach resources to the project
+########################################
 resource "digitalocean_project_resources" "attach" {
   project = digitalocean_project.axialy.id
   resources = [
