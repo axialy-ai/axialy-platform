@@ -1,93 +1,164 @@
-########################################
-# Axialy DigitalOcean Infrastructure
-########################################
-locals {
-  region = "sfo3"
-  size   = "s-1vcpu-1gb"
-  image  = "ubuntu-22-04-x64"
+###############################################################################
+#  infra/main.tf – drop-in replacement
+#  ————————————————————————————————————————————————————————————————————————
+#  Includes:
+#    • provider + variables
+#    • common cloud-init (installs & starts Nginx, opens firewall)
+#    • four droplets  (root / ui / admin / api) – ALL with identical user_data
+#    • managed MySQL cluster + two schemas
+#    • project + resource attachment
+#    • output of all IPv4 addresses
+###############################################################################
 
-  # bootstrap script for droplets that should expose a static site
-  nginx_cloud_init = <<-EOF
-    #!/bin/bash
-    set -e
-    apt-get update -y
-    DEBIAN_FRONTEND=noninteractive apt-get install -y nginx
-    ufw allow 'Nginx Full' || true
-    systemctl enable --now nginx
+terraform {
+  required_version = "~> 1.8"
+  required_providers {
+    digitalocean = {
+      source  = "digitalocean/digitalocean"
+      version = "~> 2.55"
+    }
+  }
+}
+
+provider "digitalocean" {
+  token = var.do_token
+}
+
+#########################
+#  Variables
+#########################
+
+variable "do_token" {
+  description = "DigitalOcean personal access token"
+  type        = string
+}
+
+variable "ssh_fingerprint" {
+  description = "Fingerprint of the SSH key already uploaded to DO"
+  type        = string
+}
+
+variable "region" {
+  type    = string
+  default = "sfo3"
+}
+
+variable "domain" {
+  type    = string
+  default = "axialy.ai"
+}
+
+variable "droplet_size" {
+  type    = string
+  default = "s-1vcpu-1gb"
+}
+
+variable "droplet_image" {
+  type    = string
+  default = "ubuntu-22-04-x64"
+}
+
+#########################
+#  Data sources & locals
+#########################
+
+data "digitalocean_ssh_key" "this" {
+  fingerprint = var.ssh_fingerprint
+}
+
+# same user-data for every droplet: install nginx + open firewall
+data "templatefile" "cloud_init" {
+  template = <<-EOF
+    #cloud-config
+    package_update: true
+    packages:
+      - nginx
+    runcmd:
+      - systemctl enable --now nginx
+      - ufw allow 'Nginx Full' || true
   EOF
 }
 
-########################################
-# Project
-########################################
+locals {
+  tags_common = ["axialy"]
+}
+
+#########################
+#  Project
+#########################
+
 resource "digitalocean_project" "axialy" {
   name        = "Axialy"
-  description = "Project that hosts the Axialy platform"
+  description = "All Axialy droplets and managed services"
   purpose     = "Web Application"
   environment = "Production"
 }
 
-########################################
-# Droplets
-########################################
-resource "digitalocean_droplet" "admin" {
-  name       = "admin.axialy.ai"
-  region     = local.region
-  size       = local.size
-  image      = local.image
-  tags       = ["axialy", "admin"]
-  user_data  = local.nginx_cloud_init
-  ssh_keys   = [var.ssh_fingerprint]
+#########################
+#  Droplets (HTTP only)
+#########################
+
+resource "digitalocean_droplet" "root" {
+  name   = var.domain                 # axialy.ai
+  region = var.region
+  size   = var.droplet_size
+  image  = var.droplet_image
+
+  ssh_keys = [data.digitalocean_ssh_key.this.id]
+  tags     = concat(local.tags_common, ["www"])
+
+  user_data = data.templatefile.cloud_init.rendered
 }
 
 resource "digitalocean_droplet" "ui" {
-  name       = "ui.axialy.ai"
-  region     = local.region
-  size       = local.size
-  image      = local.image
-  tags       = ["axialy", "ui"]
-  user_data  = local.nginx_cloud_init
-  ssh_keys   = [var.ssh_fingerprint]
+  name   = "ui.${var.domain}"
+  region = var.region
+  size   = var.droplet_size
+  image  = var.droplet_image
+
+  ssh_keys = [data.digitalocean_ssh_key.this.id]
+  tags     = concat(local.tags_common, ["ui"])
+
+  user_data = data.templatefile.cloud_init.rendered
 }
 
-# ------------  API droplet ------------
-# - no cloud-init script here – we want YOUR build
-#   (deploy-api.yml will rsync the files)
+resource "digitalocean_droplet" "admin" {
+  name   = "admin.${var.domain}"
+  region = var.region
+  size   = var.droplet_size
+  image  = var.droplet_image
+
+  ssh_keys = [data.digitalocean_ssh_key.this.id]
+  tags     = concat(local.tags_common, ["admin"])
+
+  user_data = data.templatefile.cloud_init.rendered
+}
+
 resource "digitalocean_droplet" "api" {
-  name       = "api.axialy.ai"
-  region     = local.region
-  size       = local.size
-  image      = local.image
-  tags       = ["axialy", "api"]
-  ssh_keys   = [var.ssh_fingerprint]
+  name   = "api.${var.domain}"
+  region = var.region
+  size   = var.droplet_size
+  image  = var.droplet_image
+
+  ssh_keys = [data.digitalocean_ssh_key.this.id]
+  tags     = concat(local.tags_common, ["api"])
+
+  # <----- Previously missing; now identical to the other droplets
+  user_data = data.templatefile.cloud_init.rendered
 }
 
-resource "digitalocean_droplet" "root" {
-  name       = "axialy.ai"
-  region     = local.region
-  size       = local.size
-  image      = local.image
-  tags       = ["axialy", "www"]
-  user_data  = local.nginx_cloud_init
-  ssh_keys   = [var.ssh_fingerprint]
-}
+##############################
+#  Managed MySQL cluster
+##############################
 
-########################################
-# Managed MySQL (unchanged)
-########################################
 resource "digitalocean_database_cluster" "mysql" {
   name       = "axialy-db-cluster"
   engine     = "mysql"
   version    = "8"
-  region     = local.region
   size       = "db-s-1vcpu-1gb"
+  region     = var.region
   node_count = 1
   project_id = digitalocean_project.axialy.id
-}
-
-resource "digitalocean_database_db" "admin" {
-  cluster_id = digitalocean_database_cluster.mysql.id
-  name       = "Axialy_Admin"
 }
 
 resource "digitalocean_database_db" "ui" {
@@ -95,15 +166,36 @@ resource "digitalocean_database_db" "ui" {
   name       = "Axialy_UI"
 }
 
-########################################
-# Attach resources to the project
-########################################
+resource "digitalocean_database_db" "admin" {
+  cluster_id = digitalocean_database_cluster.mysql.id
+  name       = "Axialy_Admin"
+}
+
+#########################
+#  Attach everything to the project
+#########################
+
 resource "digitalocean_project_resources" "attach" {
-  project = digitalocean_project.axialy.id
+  project   = digitalocean_project.axialy.id
   resources = [
-    digitalocean_droplet.admin.urn,
-    digitalocean_droplet.ui.urn,
-    digitalocean_droplet.api.urn,
     digitalocean_droplet.root.urn,
+    digitalocean_droplet.ui.urn,
+    digitalocean_droplet.admin.urn,
+    digitalocean_droplet.api.urn,
+    digitalocean_database_cluster.mysql.urn
   ]
+}
+
+#########################
+#  Outputs
+#########################
+
+output "droplet_ips" {
+  description = "IPv4 addresses of all droplets"
+  value = {
+    root  = digitalocean_droplet.root.ipv4_address
+    ui    = digitalocean_droplet.ui.ipv4_address
+    admin = digitalocean_droplet.admin.ipv4_address
+    api   = digitalocean_droplet.api.ipv4_address
+  }
 }
