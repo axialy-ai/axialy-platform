@@ -8,21 +8,24 @@ jobs:
   terraform:
     runs-on: ubuntu-latest
 
-    # ─────────────────────────────────────────
-    # Job-wide environment – ALL secrets UPPER-CASE
-    # ─────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────────
+    # Job-wide environment  – ALL secrets UPPER-CASE
+    # ──────────────────────────────────────────────────────────────
     env:
       # DigitalOcean
-      DIGITALOCEAN_TOKEN:     ${{ secrets.DIGITALOCEAN_TOKEN }}
-      TF_VAR_do_token:        ${{ secrets.TF_VAR_DO_TOKEN }}   # same token, different var name
+      DIGITALOCEAN_TOKEN:      ${{ secrets.DIGITALOCEAN_TOKEN }}
+      TF_VAR_do_token:         ${{ secrets.TF_VAR_DO_TOKEN }}
 
       # NameSilo
-      NAMESILO_API_KEY:       ${{ secrets.NAMESILO_API_KEY }}
-      NAMESILO_DOMAIN:        axialy.ai        # literal
+      NAMESILO_API_KEY:        ${{ secrets.NAMESILO_API_KEY }}
+      NAMESILO_DOMAIN:         axialy.ai     # literal
 
-      # SSH key used by appleboy/scp-action
-      DROPLET_SSH_KEY:        ${{ secrets.DROPLET_SSH_KEY }}
-      DROPLET_SSH_PASSPHRASE: ${{ secrets.DROPLET_SSH_PASSPHRASE }}
+      # SSH key material
+      DROPLET_SSH_KEY:         ${{ secrets.DROPLET_SSH_KEY }}
+      DROPLET_SSH_PASSPHRASE:  ${{ secrets.DROPLET_SSH_PASSPHRASE }}
+
+      # 👉 NEW – pass the fingerprint into Terraform
+      TF_VAR_ssh_fingerprint:  ${{ secrets.SSH_FINGERPRINT }}
 
     steps:
     # ─────────────────────────────────────────
