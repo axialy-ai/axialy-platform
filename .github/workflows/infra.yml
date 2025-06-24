@@ -89,7 +89,7 @@ jobs:
     # 6 – Terraform init / import / plan / apply
     # ─────────────────────────────────────────
     - name: Terraform init
-      run: terraform -chdir=infra init -upgrade
+      run: terraform -chdir=infra init
 
     - name: Import existing resources
       run: bash infra/import_existing.sh
