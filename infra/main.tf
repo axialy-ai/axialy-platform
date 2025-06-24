@@ -1,72 +1,19 @@
 ###############################################################################
-#  infra/main.tf – drop-in replacement
+#  infra/main.tf – *clean* drop-in replacement
 #  ————————————————————————————————————————————————————————————————————————
-#  Includes:
-#    • provider + variables
-#    • common cloud-init (installs & starts Nginx, opens firewall)
-#    • four droplets  (root / ui / admin / api) – ALL with identical user_data
-#    • managed MySQL cluster + two schemas
-#    • project + resource attachment
-#    • output of all IPv4 addresses
+#  • assumes provider, variables, versions & outputs are in their own files
+#  • adds/updates only the project, droplets, DB and attachments
 ###############################################################################
 
-terraform {
-  required_version = "~> 1.8"
-  required_providers {
-    digitalocean = {
-      source  = "digitalocean/digitalocean"
-      version = "~> 2.55"
-    }
-  }
-}
-
-provider "digitalocean" {
-  token = var.do_token
-}
-
 #########################
-#  Variables
-#########################
-
-variable "do_token" {
-  description = "DigitalOcean personal access token"
-  type        = string
-}
-
-variable "ssh_fingerprint" {
-  description = "Fingerprint of the SSH key already uploaded to DO"
-  type        = string
-}
-
-variable "region" {
-  type    = string
-  default = "sfo3"
-}
-
-variable "domain" {
-  type    = string
-  default = "axialy.ai"
-}
-
-variable "droplet_size" {
-  type    = string
-  default = "s-1vcpu-1gb"
-}
-
-variable "droplet_image" {
-  type    = string
-  default = "ubuntu-22-04-x64"
-}
-
-#########################
-#  Data sources & locals
+#  Data & locals
 #########################
 
 data "digitalocean_ssh_key" "this" {
   fingerprint = var.ssh_fingerprint
 }
 
-# same user-data for every droplet: install nginx + open firewall
+# Common cloud-init: update, install & start Nginx, open firewall
 data "templatefile" "cloud_init" {
   template = <<-EOF
     #cloud-config
@@ -95,18 +42,17 @@ resource "digitalocean_project" "axialy" {
 }
 
 #########################
-#  Droplets (HTTP only)
+#  Droplets
 #########################
 
 resource "digitalocean_droplet" "root" {
-  name   = var.domain                 # axialy.ai
+  name   = var.domain
   region = var.region
   size   = var.droplet_size
   image  = var.droplet_image
 
-  ssh_keys = [data.digitalocean_ssh_key.this.id]
-  tags     = concat(local.tags_common, ["www"])
-
+  ssh_keys  = [data.digitalocean_ssh_key.this.id]
+  tags      = concat(local.tags_common, ["www"])
   user_data = data.templatefile.cloud_init.rendered
 }
 
@@ -116,9 +62,8 @@ resource "digitalocean_droplet" "ui" {
   size   = var.droplet_size
   image  = var.droplet_image
 
-  ssh_keys = [data.digitalocean_ssh_key.this.id]
-  tags     = concat(local.tags_common, ["ui"])
-
+  ssh_keys  = [data.digitalocean_ssh_key.this.id]
+  tags      = concat(local.tags_common, ["ui"])
   user_data = data.templatefile.cloud_init.rendered
 }
 
@@ -128,9 +73,8 @@ resource "digitalocean_droplet" "admin" {
   size   = var.droplet_size
   image  = var.droplet_image
 
-  ssh_keys = [data.digitalocean_ssh_key.this.id]
-  tags     = concat(local.tags_common, ["admin"])
-
+  ssh_keys  = [data.digitalocean_ssh_key.this.id]
+  tags      = concat(local.tags_common, ["admin"])
   user_data = data.templatefile.cloud_init.rendered
 }
 
@@ -140,16 +84,14 @@ resource "digitalocean_droplet" "api" {
   size   = var.droplet_size
   image  = var.droplet_image
 
-  ssh_keys = [data.digitalocean_ssh_key.this.id]
-  tags     = concat(local.tags_common, ["api"])
-
-  # <----- Previously missing; now identical to the other droplets
+  ssh_keys  = [data.digitalocean_ssh_key.this.id]
+  tags      = concat(local.tags_common, ["api"])
   user_data = data.templatefile.cloud_init.rendered
 }
 
-##############################
+#########################
 #  Managed MySQL cluster
-##############################
+#########################
 
 resource "digitalocean_database_cluster" "mysql" {
   name       = "axialy-db-cluster"
@@ -184,18 +126,4 @@ resource "digitalocean_project_resources" "attach" {
     digitalocean_droplet.api.urn,
     digitalocean_database_cluster.mysql.urn
   ]
-}
-
-#########################
-#  Outputs
-#########################
-
-output "droplet_ips" {
-  description = "IPv4 addresses of all droplets"
-  value = {
-    root  = digitalocean_droplet.root.ipv4_address
-    ui    = digitalocean_droplet.ui.ipv4_address
-    admin = digitalocean_droplet.admin.ipv4_address
-    api   = digitalocean_droplet.api.ipv4_address
-  }
 }
