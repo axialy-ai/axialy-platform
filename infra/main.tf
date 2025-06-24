@@ -81,6 +81,8 @@ resource "digitalocean_database_cluster" "mysql" {
   region     = local.region
   size       = "db-s-1vcpu-1gb"
   node_count = 1
+  project_id = digitalocean_project.axialy.id
+
 }
 
 resource "digitalocean_database_db" "admin" {
@@ -104,6 +106,5 @@ resource "digitalocean_project_resources" "attach" {
     digitalocean_droplet.ui.urn,
     digitalocean_droplet.api.urn,
     digitalocean_droplet.root.urn,
-    digitalocean_database_cluster.mysql.urn,
   ]
 }
