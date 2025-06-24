@@ -17,9 +17,9 @@ locals {
   EOF
 }
 
-# ──────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 # Project
-# ──────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 resource "digitalocean_project" "axialy" {
   name        = "Axialy"
   description = "Project that hosts the Axialy platform"
@@ -27,9 +27,9 @@ resource "digitalocean_project" "axialy" {
   environment = "Production"
 }
 
-# ──────────────────────────────────────
-# Droplets  (now with ssh_keys = [var.ssh_fingerprint])
-# ──────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
+# Droplets  (ssh_keys = [var.ssh_fingerprint])
+# ────────────────────────────────────────────────────────────────────────────
 resource "digitalocean_droplet" "admin" {
   name       = "admin.axialy.ai"
   region     = local.region
@@ -37,7 +37,7 @@ resource "digitalocean_droplet" "admin" {
   image      = local.image
   tags       = ["axialy", "admin"]
   user_data  = local.nginx_cloud_init
-  ssh_keys   = [var.ssh_fingerprint]   # ← NEW
+  ssh_keys   = [var.ssh_fingerprint]
 }
 
 resource "digitalocean_droplet" "ui" {
@@ -47,7 +47,7 @@ resource "digitalocean_droplet" "ui" {
   image      = local.image
   tags       = ["axialy", "ui"]
   user_data  = local.nginx_cloud_init
-  ssh_keys   = [var.ssh_fingerprint]   # ← NEW
+  ssh_keys   = [var.ssh_fingerprint]
 }
 
 resource "digitalocean_droplet" "api" {
@@ -56,8 +56,11 @@ resource "digitalocean_droplet" "api" {
   size       = local.size
   image      = local.image
   tags       = ["axialy", "api"]
-  # API stack handles its own runtime – leave cloud-init blank
-  ssh_keys   = [var.ssh_fingerprint]   # ← NEW
+
+  # add the same bootstrap script so it comes up with NGINX + placeholder page
+  user_data  = local.nginx_cloud_init   # ← ADDED
+
+  ssh_keys   = [var.ssh_fingerprint]
 }
 
 resource "digitalocean_droplet" "root" {
@@ -67,13 +70,13 @@ resource "digitalocean_droplet" "root" {
   image      = local.image
   tags       = ["axialy", "www"]
   user_data  = local.nginx_cloud_init
-  ssh_keys   = [var.ssh_fingerprint]   # ← NEW
+  ssh_keys   = [var.ssh_fingerprint]
 }
 
-# ──────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 # Managed MySQL
 # (unchanged)
-# ──────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 resource "digitalocean_database_cluster" "mysql" {
   name       = "axialy-db-cluster"
   engine     = "mysql"
@@ -82,7 +85,6 @@ resource "digitalocean_database_cluster" "mysql" {
   size       = "db-s-1vcpu-1gb"
   node_count = 1
   project_id = digitalocean_project.axialy.id
-
 }
 
 resource "digitalocean_database_db" "admin" {
@@ -95,10 +97,10 @@ resource "digitalocean_database_db" "ui" {
   name       = "Axialy_UI"
 }
 
-# ──────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 # Attach everything to the project
 # (unchanged)
-# ──────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
 resource "digitalocean_project_resources" "attach" {
   project = digitalocean_project.axialy.id
   resources = [
