@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--  Axialy umbrella emblem (icon‑only)  -->
+<svg xmlns="http://www.w3.org/2000/svg"
+     viewBox="0 0 90 90" aria-hidden="true">
+
+  <defs>
+    <linearGradient id="grad-canopy" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"  stop-color="#62B2FF"/>
+      <stop offset="1"  stop-color="#004CA5"/>
+    </linearGradient>
+    <linearGradient id="grad-shaft"  x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"  stop-color="#A7C9FF"/>
+      <stop offset="1"  stop-color="#004CA5"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Canopy -->
+  <path d="M0 34 A45 24 0 0 1 90 34 L90 42
+           C73 35 60 33 45 33
+           C30 33 17 35 0 42 Z"
+        fill="url(#grad-canopy)"/>
+  <!-- Ribs -->
+  <path d="M15 33v5 M30 33v3 M45 33v3 M60 33v3 M75 33v5"
+        stroke="#002B73" stroke-width="2" stroke-linecap="round"/>
+  <!-- Shaft + hook -->
+  <path d="M45 34 V70 Q45 80 33 80"
+        stroke="url(#grad-shaft)" stroke-width="4"
+        fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

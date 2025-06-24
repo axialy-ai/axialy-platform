@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--  Axialy • Umbrella-icon + word-mark  (vector, scalable, updated umbrella shape)  -->
+<svg xmlns="http://www.w3.org/2000/svg"
+     viewBox="0 0 270 80"
+     aria-labelledby="title desc" role="img">
+
+  <title id="title">Axialy Logo</title>
+  <desc id="desc">
+    Stylized umbrella emblem paired with AXIALY word-mark.
+  </desc>
+
+  <!-- ─────────  GRADIENTS  ───────── -->
+  <defs>
+    <!-- canopy gradient (top-to-bottom blue) -->
+    <linearGradient id="grad-wings" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"   stop-color="#4C9BFF"/>
+      <stop offset="1"   stop-color="#004CA5"/>
+    </linearGradient>
+  </defs>
+
+  <!-- ─────────  UMBRELLA ICON  ───────── -->
+  <g id="umbrella-icon">
+    <!-- Canopy: Quadratic‐curve semicircle filled with gradient -->
+    <path
+      d="M10,40 
+         Q40,10 70,40 
+         Z"
+      fill="url(#grad-wings)"
+      />
+
+    <!-- Pole: vertical line from canopy apex down -->
+    <path
+      d="M40,40 
+         L40,60"
+      stroke="url(#grad-wings)"
+      stroke-width="2"
+      />
+
+    <!-- Handle: simple curved hook -->
+    <path
+      d="M40,60
+         C40,75 60,75 60,60"
+      fill="none"
+      stroke="url(#grad-wings)"
+      stroke-width="2"
+      />
+  </g>
+
+  <!-- ─────────  WORD-MARK  ───────── -->
+  <text x="135" y="56"
+        font-family="Segoe UI, Roboto, Helvetica, Arial, sans-serif"
+        font-size="40"
+        font-weight="700"
+        letter-spacing="2"
+        fill="url(#grad-wings)">
+    AXIALY
+  </text>
+</svg>

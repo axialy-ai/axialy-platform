@@ -1,0 +1,246 @@
+/*─────────────────────────────────────────────────────────────
+  GLOBAL RESET & TYPOGRAPHY
+─────────────────────────────────────────────────────────────*/
+*,
+*::before,
+*::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { scroll-behavior: smooth; }
+body {
+  font-family: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: #fff;
+  color: #141414;
+  line-height: 1.6;
+}
+
+h1, h2, h3 { font-weight: 700; line-height: 1.25; }
+h1.display { font-size: clamp(2.3rem, 5vw + 1rem, 4rem); line-height: 1.2; }
+h2.section-title { font-size: clamp(1.5rem, 2.8vw, 2.25rem); margin-bottom: 2rem; text-align: center; }
+h3 { font-size: 1.25rem; margin-bottom: .75rem; }
+
+p { margin-bottom: 1em; }
+.lead { font-size: 1.25rem; margin-bottom: 1.5em; }
+
+a { color: #0056d2; text-decoration: none; }
+a:hover { color: #003c97; }
+
+.container { width: min(1180px, 92%); margin-inline: auto; }
+
+/*─────────────────────────────────────────────────────────────
+  BUTTONS
+─────────────────────────────────────────────────────────────*/
+.btn {
+  display: inline-block;
+  padding: .75rem 1.8rem;
+  border-radius: .45rem;
+  font-weight: 600;
+  transition: background .25s, color .25s;
+}
+.btn-primary { background: #0056d2; color: #fff; }
+.btn-primary:hover { background: #003c97; }
+.btn-lg { font-size: 1.1rem; margin-top: 1.8rem; }
+
+.text-center { text-align: center; }
+.mt-lg { margin-top: 2.5rem; }
+
+/*─────────────────────────────────────────────────────────────
+  HEADER & NAVIGATION
+─────────────────────────────────────────────────────────────*/
+.site-header {
+  background: #fff;
+  border-bottom: 1px solid #e5e5e5;
+  position: sticky;
+  top: 0;
+  z-index: 1000;
+}
+
+.header-inner {
+  display: flex;
+  align-items: center;
+  gap: 3.2rem;
+  padding: .6rem 0;
+}
+
+/* brand block */
+.brand {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1;
+  color: #0d3a74;
+  text-decoration: none;
+}
+.brand:hover { opacity: .88; }
+
+.brand-icon {
+  width: 46px;
+  height: 46px;
+  flex: 0 0 46px;
+}
+
+.site-nav ul {
+  display: flex;
+  list-style: none;
+  gap: 1.5rem;
+}
+.site-nav a {
+  font-weight: 600;
+  text-transform: capitalize;
+  position: relative;
+  padding-block: .3rem;
+  letter-spacing: .3px;
+}
+.site-nav a::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: -4px;
+  width: 100%;
+  height: 2px;
+  background: currentColor;
+  transform: scaleX(0);
+  transform-origin: right;
+  transition: transform .25s;
+}
+.site-nav a:hover::after {
+  transform: scaleX(1);
+  transform-origin: left;
+}
+
+/*─────────────────────────────────────────────────────────────
+  HERO
+─────────────────────────────────────────────────────────────*/
+.hero {
+  position: relative;
+  min-height: 560px;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  color: #fff;
+}
+.hero-bg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, .55);
+}
+.hero-content {
+  position: relative;
+  z-index: 2;
+  width: min(680px, 92%);
+}
+
+/*─────────────────────────────────────────────────────────────
+  STRIP SECTION WRAPPER
+─────────────────────────────────────────────────────────────*/
+.strip { padding-block: 4.5rem; }
+.strip.alt { background: #f8f9fb; }
+
+/*─────────────────────────────────────────────────────────────
+  FEATURE CARDS
+─────────────────────────────────────────────────────────────*/
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 2rem;
+}
+.card {
+  background: #fff;
+  padding: 2rem 2rem 2.25rem;
+  border-radius: .75rem;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, .05);
+  transition: transform .25s, box-shadow .25s;
+}
+.card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, .07);
+}
+
+/*─────────────────────────────────────────────────────────────
+  BENEFITS
+─────────────────────────────────────────────────────────────*/
+.benefit-list {
+  list-style: none;
+  display: grid;
+  gap: 1rem;
+  max-width: 800px;
+  margin-inline: auto;
+}
+@media (min-width: 768px) {
+  .benefit-list { text-align: left; }
+}
+
+/*─────────────────────────────────────────────────────────────
+  SCREENSHOTS
+─────────────────────────────────────────────────────────────*/
+.screen-grid {
+  display: grid;
+  gap: 2rem;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  margin-top: 2rem;
+}
+.screen-grid figure {
+  background: #fff;
+  border-radius: .5rem;
+  overflow: hidden;
+  border: 1px solid #ddd;
+}
+.screen-grid img { width: 100%; display: block; }
+.screen-grid figcaption {
+  font-size: .9rem;
+  padding: .75rem 1rem;
+  color: #555;
+}
+
+/*─────────────────────────────────────────────────────────────
+  PRICING TABLE
+─────────────────────────────────────────────────────────────*/
+.pricing-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 2rem;
+  font-size: .95rem;
+}
+.pricing-table thead {
+  background: #0d3a74;
+  color: #fff;
+}
+.pricing-table th,
+.pricing-table td {
+  padding: .95rem 1rem;
+  text-align: left;
+  border: 1px solid #e0e0e0;
+}
+.pricing-table td:nth-child(3),
+.pricing-table th:nth-child(3) { text-align: right; width: 140px; }
+.pricing-table tbody tr:nth-child(even) { background: #f2f6ff; }
+
+/*─────────────────────────────────────────────────────────────
+  CONTACT BOX
+─────────────────────────────────────────────────────────────*/
+.contact-box {
+  text-align: center;
+  max-width: 700px;
+}
+
+/*─────────────────────────────────────────────────────────────
+  FOOTER
+─────────────────────────────────────────────────────────────*/
+.site-footer {
+  background: #111;
+  color: #ccc;
+  text-align: center;
+  padding: 2.5rem 0 3rem;
+  font-size: .9rem;
+}
+.site-footer nav { margin-top: .4rem; }
+.site-footer a { color: #bfd2ff; }
+.site-footer a:hover { color: #fff; }

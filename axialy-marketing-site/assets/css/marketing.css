@@ -1,0 +1,29 @@
+/*─────────────────────────────────────────────────────────────
+  COMPONENT & SECTION STYLES
+  (only sections that changed / new additions)
+─────────────────────────────────────────────────────────────*/
+
+/* HERO  – increased max‑width on text & prettier button spacing */
+.hero-content { width: min(680px, 92%); }
+.display { font-size: clamp(2.3rem, 5vw + 1rem, 4rem); line-height: 1.2; margin-bottom: 1.2rem; }
+.btn-lg { margin-top: 1.8rem; }
+
+/* NAV  – subtle uppercase + spacing tweak */
+.site-nav a { text-transform: capitalize; letter-spacing: .3px; }
+
+/* FEATURE CARDS – lighter shadow + rounded ribbed canopy on hover */
+.card { box-shadow: 0 3px 10px rgba(0,0,0,.05); }
+.card:hover { box-shadow: 0 8px 20px rgba(0,0,0,.07); transform: translateY(-3px); }
+
+/* BENEFIT LIST – left‑aligned on large screens for easier scanning */
+@media (min-width: 768px) {
+  .benefit-list { text-align: left; }
+}
+
+/* PRICING – tighter column widths & right‑aligned price column */
+.pricing-table td:nth-child(3),
+.pricing-table th:nth-child(3) { text-align: right; width: 140px; }
+
+/* FOOTER – soften link colour */
+.site-footer a { color: #bfd2ff; }
+.site-footer a:hover { color: #fff; }
