@@ -42,6 +42,24 @@ jobs:
           done
           echo "::error::SSH never became ready"; exit 1
 
+      - name: Ensure NGINX is installed & running
+        uses: appleboy/ssh-action@v0.1.6
+        with:
+          host:       ${{ steps.ip.outputs.ip }}
+          username:   root
+          key:        ${{ env.DROPLET_SSH_KEY }}
+          passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
+          script: |
+            set -e
+            if ! command -v nginx >/dev/null 2>&1; then
+              apt-get update -y
+              DEBIAN_FRONTEND=noninteractive apt-get install -y nginx
+            fi
+            systemctl enable --now nginx
+            # in case UFW is on (cloud-init sometimes enables it)
+            ufw allow 'Nginx Full' || true
+
+
       - name: Rsync new build
         uses: appleboy/scp-action@v0.1.5
         with:
