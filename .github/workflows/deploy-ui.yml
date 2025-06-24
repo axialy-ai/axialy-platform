@@ -1,0 +1,19 @@
+name: Deploy UI Product
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - "axialy-ui-product/**"
+
+# …
+
+      - id: ip
+        name: Look up UI droplet IP
+        run: |
+          ip=$(doctl compute droplet list --format Name,PublicIPv4 --no-header \
+                 | awk '$1=="ui.axialy.ai"{print $2; exit}')
+          echo "ip=$ip" >> "$GITHUB_OUTPUT"
+
+# …
+
+          source:     axialy-ui-product/*
