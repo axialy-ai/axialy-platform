@@ -1,8 +1,7 @@
 ###############################################################################
-#  infra/main.tf – *clean* drop-in replacement
-#  ————————————————————————————————————————————————————————————————————————
-#  • assumes provider, variables, versions & outputs are in their own files
-#  • adds/updates only the project, droplets, DB and attachments
+#  infra/main.tf – fixed (2025-06-24)
+#  – Removes bad templatefile provider
+#  – Uses a plain heredoc for cloud-init
 ###############################################################################
 
 #########################
@@ -13,9 +12,8 @@ data "digitalocean_ssh_key" "this" {
   fingerprint = var.ssh_fingerprint
 }
 
-# Common cloud-init: update, install & start Nginx, open firewall
-data "templatefile" "cloud_init" {
-  template = <<-EOF
+locals {
+  cloud_init = <<-EOF
     #cloud-config
     package_update: true
     packages:
@@ -24,9 +22,7 @@ data "templatefile" "cloud_init" {
       - systemctl enable --now nginx
       - ufw allow 'Nginx Full' || true
   EOF
-}
 
-locals {
   tags_common = ["axialy"]
 }
 
@@ -53,7 +49,7 @@ resource "digitalocean_droplet" "root" {
 
   ssh_keys  = [data.digitalocean_ssh_key.this.id]
   tags      = concat(local.tags_common, ["www"])
-  user_data = data.templatefile.cloud_init.rendered
+  user_data = local.cloud_init
 }
 
 resource "digitalocean_droplet" "ui" {
@@ -64,7 +60,7 @@ resource "digitalocean_droplet" "ui" {
 
   ssh_keys  = [data.digitalocean_ssh_key.this.id]
   tags      = concat(local.tags_common, ["ui"])
-  user_data = data.templatefile.cloud_init.rendered
+  user_data = local.cloud_init
 }
 
 resource "digitalocean_droplet" "admin" {
@@ -75,7 +71,7 @@ resource "digitalocean_droplet" "admin" {
 
   ssh_keys  = [data.digitalocean_ssh_key.this.id]
   tags      = concat(local.tags_common, ["admin"])
-  user_data = data.templatefile.cloud_init.rendered
+  user_data = local.cloud_init
 }
 
 resource "digitalocean_droplet" "api" {
@@ -86,7 +82,7 @@ resource "digitalocean_droplet" "api" {
 
   ssh_keys  = [data.digitalocean_ssh_key.this.id]
   tags      = concat(local.tags_common, ["api"])
-  user_data = data.templatefile.cloud_init.rendered
+  user_data = local.cloud_init
 }
 
 #########################
