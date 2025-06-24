@@ -8,9 +8,9 @@ jobs:
   terraform:
     runs-on: ubuntu-latest
 
-    # ───────────────────────────────────────────────────────────────────
-    # Job-wide environment – ALL secrets UPPER-CASE
-    # ───────────────────────────────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────────
+    # Job-wide environment  – ALL secrets UPPER-CASE
+    # ──────────────────────────────────────────────────────────────
     env:
       # DigitalOcean
       DIGITALOCEAN_TOKEN:      ${{ secrets.DIGITALOCEAN_TOKEN }}
@@ -18,27 +18,27 @@ jobs:
 
       # NameSilo
       NAMESILO_API_KEY:        ${{ secrets.NAMESILO_API_KEY }}
-      NAMESILO_DOMAIN:         axialy.ai     # literal
+      NAMESILO_DOMAIN:         axialy.ai          # literal
 
       # SSH key material
       DROPLET_SSH_KEY:         ${{ secrets.DROPLET_SSH_KEY }}
       DROPLET_SSH_PASSPHRASE:  ${{ secrets.DROPLET_SSH_PASSPHRASE }}
 
-      # → NEW – pass the fingerprint into Terraform
+      # fingerprint injected into every droplet via TF
       TF_VAR_ssh_fingerprint:  ${{ secrets.SSH_FINGERPRINT }}
 
     steps:
-    # 1 – Checkout repo
+    # ─────────────────────── 1 — Checkout repo ───────────────────
     - uses: actions/checkout@v4
 
-    # 2 – Wipe any local artefacts that could resurrect old providers
+    # ─────────────────── 2 — Remove stale TF artefacts ───────────
     - name: Remove stale Terraform artefacts
       run: |
         rm -f infra/terraform.tfstate*
         rm -f infra/.terraform.lock.hcl
         rm -rf infra/.terraform
 
-    # 3 – Detect content changes (marketing / ui / admin)
+    # ─── 3 — Detect content changes (marketing / ui / admin / api) ──
     - id: filter
       uses: dorny/paths-filter@v3
       with:
@@ -51,8 +51,10 @@ jobs:
             - 'axialy-ui-product/**'
           admin:
             - 'axialy-admin-product/**'
+          api:
+            - 'axialy-api-product/**'
 
-    # 4 – Install doctl & authenticate
+    # ─────────── 4 — Install doctl & authenticate ────────────────
     - name: Install doctl
       run: |
         set -e
@@ -65,12 +67,12 @@ jobs:
     - name: doctl auth
       run: doctl auth init -t "$DIGITALOCEAN_TOKEN"
 
-    # 5 – Install Terraform CLI
+    # ───────────── 5 — Install Terraform CLI ─────────────────────
     - uses: hashicorp/setup-terraform@v3
       with:
         terraform_version: 1.8.2
 
-    # 6 – Terraform init / import / plan / apply
+    # ───────── 6 — Terraform init / import / plan / apply ────────
     - name: Terraform init
       run: terraform -chdir=infra init
 
@@ -90,7 +92,7 @@ jobs:
       if: github.ref == 'refs/heads/main'
       run: terraform -chdir=infra apply -auto-approve -input=false
 
-    # 7 – Capture droplet IPs
+    # ─────────────── 7 — Capture droplet IPs ──────────────────────
     - id: ips
       run: |
         IPS=$(terraform -chdir=infra output -json droplet_ips)
@@ -99,7 +101,7 @@ jobs:
         echo "API_IP=$(   echo "$IPS" | jq -r '.api')"   >> "$GITHUB_ENV"
         echo "ADMIN_IP=$( echo "$IPS" | jq -r '.admin')" >> "$GITHUB_ENV"
 
-    # 8 – Wait for SSH on droplets we’ll deploy to  ← CHANGED
+    # ───── 8 — Wait for SSH on all four droplets ─────────────────
     - name: ⏳ Wait for SSH on droplets
       shell: bash
       run: |
@@ -115,9 +117,9 @@ jobs:
         wait_ssh "$ROOT_IP"
         wait_ssh "$UI_IP"
         wait_ssh "$ADMIN_IP"
-        wait_ssh "$API_IP"      # ← NEW
+        wait_ssh "$API_IP"
 
-    # 9 – Update NameSilo DNS so records match new IPs
+    # ─────────── 9 — Update NameSilo DNS records ────────────────
     - name: Update NameSilo DNS
       if: github.ref == 'refs/heads/main'
       env:
@@ -125,7 +127,7 @@ jobs:
         NAMESILO_DOMAIN:  ${{ env.NAMESILO_DOMAIN }}
       run: bash infra/update_namesilo.sh
 
-    # 10 – SCP deployments (ALWAYS after Terraform)
+    # ────────── 10 — SCP deployments (marketing / ui / admin / api) ─
     - name: Deploy marketing site → root droplet
       if: success()
       uses: appleboy/scp-action@v0.1.5
@@ -165,7 +167,6 @@ jobs:
         strip_components: 1
         timeout:    120s
 
-    # ← NEW block
     - name: Deploy API product → api droplet
       if: success()
       uses: appleboy/scp-action@v0.1.5
