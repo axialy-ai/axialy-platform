@@ -1,10 +1,12 @@
 # infra/template_static_site.tf
-##############################
+############################################################
+# Renders cloud-init once, injecting live DB credentials.
+# All static-site droplets (root/ui/api/admin) share it.
+############################################################
 
-# Render the cloud-init YAML once, injecting DB creds pulled from DO resources.
 locals {
   static_site_user_data = templatefile(
-    "${path.module}/cloudinit/static_site.tpl",
+    "${path.module}/cloud-init/static_site.tpl",   # ← fixed path
     {
       admin_db_host     = digitalocean_database_cluster.mysql.host
       admin_db_port     = digitalocean_database_cluster.mysql.port
