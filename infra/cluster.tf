@@ -2,7 +2,7 @@
 # infra/cluster.tf  – Managed MySQL cluster + DBs + user
 ###############################################################################
 
-# ── Cluster ──────────────────────────────────────────────────────────────────
+# ─────────────── Cluster ────────────────────────────────────────────────────
 resource "digitalocean_database_cluster" "mysql" {
   name       = "axialy-mysql"      # must match workflow
   engine     = "mysql"
@@ -12,7 +12,7 @@ resource "digitalocean_database_cluster" "mysql" {
   node_count = 1
 }
 
-# ── Databases ────────────────────────────────────────────────────────────────
+# ─────────────── Databases ─────────────────────────────────────────────────
 resource "digitalocean_database_db" "ui" {
   cluster_id = digitalocean_database_cluster.mysql.id
   name       = "Axialy_UI"
@@ -23,14 +23,9 @@ resource "digitalocean_database_db" "admin" {
   name       = "Axialy_Admin"
 }
 
-# ── Application user for the Admin product ──────────────────────────────────
+# ─────────────── Application user for the Admin product ───────────────────
 resource "digitalocean_database_user" "admin_app" {
   cluster_id        = digitalocean_database_cluster.mysql.id
   name              = "axialy_admin_app"
   mysql_auth_plugin = "mysql_native_password"
-}
-
-output "admin_db_password" {
-  value     = digitalocean_database_user.admin_app.password
-  sensitive = true
 }
