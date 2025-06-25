@@ -9,9 +9,9 @@ jobs:
   terraform:
     runs-on: ubuntu-latest
 
-    # ───────────────────────────────
-    # Job-wide environment variables
-    # ───────────────────────────────
+    #──────────────────────────────────────────────────────────────────────────
+    # Job-wide environment – ALL secrets UPPER-CASE
+    #──────────────────────────────────────────────────────────────────────────
     env:
       # DigitalOcean
       DIGITALOCEAN_TOKEN:      ${{ secrets.DIGITALOCEAN_TOKEN }}
@@ -19,7 +19,7 @@ jobs:
 
       # NameSilo
       NAMESILO_API_KEY:        ${{ secrets.NAMESILO_API_KEY }}
-      NAMESILO_DOMAIN:         axialy.ai            # literal
+      NAMESILO_DOMAIN:         axialy.ai    # literal
 
       # SSH key material
       DROPLET_SSH_KEY:         ${{ secrets.DROPLET_SSH_KEY }}
@@ -29,193 +29,158 @@ jobs:
       TF_VAR_ssh_fingerprint:  ${{ secrets.SSH_FINGERPRINT }}
 
     steps:
-    # ── 1. Checkout repo ────────────────────────────────────────────────────
-    - uses: actions/checkout@v4
+      # ───────────────────── 1 — checkout repo ──────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    # ── 2. Remove any stale local TF artefacts (we keep state in the cloud) ─
-    - name: Remove stale Terraform artefacts
-      run: |
-        rm -f infra/terraform.tfstate*
-        rm -f infra/.terraform.lock.hcl
-        rm -rf infra/.terraform
+      # ───────────────────── 2 — clean local TF artefacts ───────────────────
+      - name: Remove stale Terraform artefacts
+        run: |
+          rm -f infra/terraform.tfstate*
+          rm -f infra/.terraform.lock.hcl
+          rm -rf infra/.terraform
 
-    # ── 3. Detect content-only changes (for conditional deploys later) ──────
-    - id: filter
-      uses: dorny/paths-filter@v3
-      with:
-        list-files: none
-        initial-fetch-depth: 100
-        filters: |
-          marketing:
-            - 'axialy-marketing-site/**'
-          ui:
-            - 'axialy-ui-product/**'
-          admin:
-            - 'axialy-admin-product/**'
-          api:
-            - 'axialy-api-product/**'
+      # ───────────────────── 3 — detect content changes ─────────────────────
+      - id: filter
+        name: Detect content changes
+        uses: dorny/paths-filter@v3
+        with:
+          list-files: none
+          initial-fetch-depth: 100
+          filters: |
+            marketing:
+              - 'axialy-marketing-site/**'
+            ui:
+              - 'axialy-ui-product/**'
+            admin:
+              - 'axialy-admin-product/**'
+            api:
+              - 'axialy-api-product/**'
 
-    # ── 4. Install doctl & authenticate ─────────────────────────────────────
-    - name: Install doctl
-      run: |
-        set -e
-        VER=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest \
-               | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
-        curl -sL "https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz" \
-          | tar -xz
-        sudo mv doctl /usr/local/bin
+      # ───────────────────── 4 — install doctl & authenticate ───────────────
+      - name: Install doctl
+        run: |
+          set -e
+          VER=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest \
+                 | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
+          curl -sL "https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz" \
+            | tar -xz
+          sudo mv doctl /usr/local/bin
 
-    - name: doctl auth
-      run: doctl auth init -t "$DIGITALOCEAN_TOKEN"
+      - name: doctl auth
+        run: doctl auth init -t "$DIGITALOCEAN_TOKEN"
 
-    # ── 5. Install Terraform CLI ────────────────────────────────────────────
-    - uses: hashicorp/setup-terraform@v3
-      with:
-        terraform_version: 1.8.2
+      # ───────────────────── 5 — install Terraform CLI ──────────────────────
+      - name: Set up Terraform CLI
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.8.2
 
-    # ── 6. Terraform init / import / plan / apply ───────────────────────────
-    - name: Terraform init
-      run: terraform -chdir=infra init
+      # ───────────────────── 6 — init / import / plan / apply ───────────────
+      - name: Terraform init
+        run: terraform -chdir=infra init
 
-    - name: Import existing resources
-      run: bash infra/import_existing.sh
+      - name: Import existing resources
+        run: bash infra/import_existing.sh
 
-    - name: Purge stale NameSilo A-records
-      env:
-        NAMESILO_API_KEY: ${{ env.NAMESILO_API_KEY }}
-        NAMESILO_DOMAIN:  ${{ env.NAMESILO_DOMAIN }}
-      run: bash infra/purge_namesilo_missing.sh
+      - name: Purge stale NameSilo A records
+        env:
+          NAMESILO_API_KEY: ${{ env.NAMESILO_API_KEY }}
+          NAMESILO_DOMAIN:  ${{ env.NAMESILO_DOMAIN }}
+        run: bash infra/purge_namesilo_missing.sh
 
-    - name: Terraform plan
-      run: terraform -chdir=infra plan -input=false
+      - name: Terraform plan
+        run: terraform -chdir=infra plan -input=false
 
-    - name: Terraform apply
-      if: github.ref == 'refs/heads/main'
-      run: terraform -chdir=infra apply -auto-approve -input=false
+      - name: Terraform apply
+        if: github.ref == 'refs/heads/main'
+        run: terraform -chdir=infra apply -auto-approve -input=false
 
-    # ── 7. Capture TF outputs (IPs + Admin-DB creds) ────────────────────────
-    - id: outputs
-      name: Capture Terraform outputs
-      run: |
-        # droplet IPs
-        IPS=$(terraform -chdir=infra output -json droplet_ips)
-        echo "ROOT_IP=$(  echo "$IPS" | jq -r '.root')"  >> "$GITHUB_ENV"
-        echo "UI_IP=$(    echo "$IPS" | jq -r '.ui')"    >> "$GITHUB_ENV"
-        echo "API_IP=$(   echo "$IPS" | jq -r '.api')"   >> "$GITHUB_ENV"
-        echo "ADMIN_IP=$( echo "$IPS" | jq -r '.admin')" >> "$GITHUB_ENV"
+      # ───────────────────── 7 — capture droplet IPs ────────────────────────
+      - id: ips
+        name: Capture droplet IPs
+        run: |
+          IPS=$(terraform -chdir=infra output -json droplet_ips)
+          echo "ROOT_IP=$(  echo "$IPS" | jq -r '.root')"  >> "$GITHUB_ENV"
+          echo "UI_IP=$(    echo "$IPS" | jq -r '.ui')"    >> "$GITHUB_ENV"
+          echo "API_IP=$(   echo "$IPS" | jq -r '.api')"   >> "$GITHUB_ENV"
+          echo "ADMIN_IP=$( echo "$IPS" | jq -r '.admin')" >> "$GITHUB_ENV"
 
-        # Admin-product DB connection details
-        ADMIN_DB_HOST=$(terraform -chdir=infra output -raw admin_db_host)
-        ADMIN_DB_PORT=$(terraform -chdir=infra output -raw admin_db_port)
-        ADMIN_DB_USER=$(terraform -chdir=infra output -raw admin_db_user)
-        ADMIN_DB_PASS=$(terraform -chdir=infra output -raw admin_db_password)
-        ADMIN_DB_NAME=$(terraform -chdir=infra output -raw admin_db_name)
+      # ───────────────────── 8 — wait for SSH on each droplet ───────────────
+      - name: Wait for SSH on droplets
+        shell: bash
+        run: |
+          wait_ssh () {
+            local host=$1
+            echo "Waiting for SSH on ${host} ..."
+            for i in {1..30}; do
+              nc -z -w3 "$host" 22 && { echo "${host} ready"; return; }
+              sleep 5
+            done
+            echo "::error::SSH never became ready on ${host}"; exit 1
+          }
+          wait_ssh "$ROOT_IP"
+          wait_ssh "$UI_IP"
+          wait_ssh "$ADMIN_IP"
+          wait_ssh "$API_IP"
 
-        echo "::add-mask::$ADMIN_DB_PASS"
-        {
-          echo "ADMIN_DB_HOST=$ADMIN_DB_HOST"
-          echo "ADMIN_DB_PORT=$ADMIN_DB_PORT"
-          echo "ADMIN_DB_USER=$ADMIN_DB_USER"
-          echo "ADMIN_DB_PASS=$ADMIN_DB_PASS"
-          echo "ADMIN_DB_NAME=$ADMIN_DB_NAME"
-        } >> "$GITHUB_ENV"
+      # ───────────────────── 9 — update NameSilo DNS ────────────────────────
+      - name: Update NameSilo DNS
+        if: github.ref == 'refs/heads/main'
+        env:
+          NAMESILO_API_KEY: ${{ env.NAMESILO_API_KEY }}
+          NAMESILO_DOMAIN:  ${{ env.NAMESILO_DOMAIN }}
+        run: bash infra/update_namesilo.sh
 
-    # ── 8. Wait for SSH on all droplets ──────────────────────────────────────
-    - name: ⏳ Wait for SSH on droplets
-      shell: bash
-      run: |
-        wait_ssh () {
-          local host=$1
-          echo "⏳ Waiting for SSH on $host …"
-          for i in {1..30}; do
-            nc -z -w3 "$host" 22 && { echo "✅  $host ready"; return; }
-            sleep 5
-          done
-          echo "::error::SSH never became ready on $host"; exit 1
-        }
-        wait_ssh "$ROOT_IP"
-        wait_ssh "$UI_IP"
-        wait_ssh "$ADMIN_IP"
-        wait_ssh "$API_IP"
+      # ───────────────────── 10 — SCP deployments ───────────────────────────
+      - name: Deploy marketing site to root droplet
+        if: success() && steps.filter.outputs.marketing == 'true'
+        uses: appleboy/scp-action@v0.1.5
+        with:
+          host:       ${{ env.ROOT_IP }}
+          username:   root
+          key:        ${{ env.DROPLET_SSH_KEY }}
+          passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
+          source:     axialy-marketing-site/*
+          target:     /var/www/html/
+          strip_components: 1
+          timeout:    120s
 
-    # ── 9. Sync DNS with NameSilo ────────────────────────────────────────────
-    - name: Update NameSilo DNS
-      if: github.ref == 'refs/heads/main'
-      env:
-        NAMESILO_API_KEY: ${{ env.NAMESILO_API_KEY }}
-        NAMESILO_DOMAIN:  ${{ env.NAMESILO_DOMAIN }}
-      run: bash infra/update_namesilo.sh
+      - name: Deploy UI product to ui droplet
+        if: success() && steps.filter.outputs.ui == 'true'
+        uses: appleboy/scp-action@v0.1.5
+        with:
+          host:       ${{ env.UI_IP }}
+          username:   root
+          key:        ${{ env.DROPLET_SSH_KEY }}
+          passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
+          source:     axialy-ui-product/*
+          target:     /var/www/html/
+          strip_components: 1
+          timeout:    120s
 
-    # ── 10. Deploy artefacts to droplets ─────────────────────────────────────
-    - name: Deploy marketing site → root droplet
-      if: success()
-      uses: appleboy/scp-action@v0.1.5
-      with:
-        host:       ${{ env.ROOT_IP }}
-        username:   root
-        key:        ${{ env.DROPLET_SSH_KEY }}
-        passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
-        source:     axialy-marketing-site/*
-        target:     /var/www/html/
-        strip_components: 1
-        timeout:    120s
+      - name: Deploy Admin product to admin droplet
+        if: success() && steps.filter.outputs.admin == 'true'
+        uses: appleboy/scp-action@v0.1.5
+        with:
+          host:       ${{ env.ADMIN_IP }}
+          username:   root
+          key:        ${{ env.DROPLET_SSH_KEY }}
+          passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
+          source:     axialy-admin-product/*
+          target:     /var/www/html/
+          strip_components: 1
+          timeout:    120s
 
-    - name: Deploy UI product → ui droplet
-      if: success()
-      uses: appleboy/scp-action@v0.1.5
-      with:
-        host:       ${{ env.UI_IP }}
-        username:   root
-        key:        ${{ env.DROPLET_SSH_KEY }}
-        passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
-        source:     axialy-ui-product/*
-        target:     /var/www/html/
-        strip_components: 1
-        timeout:    120s
-
-    - name: Deploy Admin product → admin droplet
-      if: success()
-      uses: appleboy/scp-action@v0.1.5
-      with:
-        host:       ${{ env.ADMIN_IP }}
-        username:   root
-        key:        ${{ env.DROPLET_SSH_KEY }}
-        passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
-        source:     axialy-admin-product/*
-        target:     /var/www/html/
-        strip_components: 1
-        timeout:    120s
-
-    # ── 11. Provision /etc/axialy_admin_env on the admin droplet ────────────
-    - name: Provision Admin DB env file
-      if: success()
-      uses: appleboy/ssh-action@v0.1.6
-      with:
-        host:       ${{ env.ADMIN_IP }}
-        username:   root
-        key:        ${{ env.DROPLET_SSH_KEY }}
-        passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
-        envs:       "ADMIN_DB_HOST,ADMIN_DB_PORT,ADMIN_DB_USER,ADMIN_DB_PASS,ADMIN_DB_NAME"
-        script: |-
-          cat >/etc/axialy_admin_env <<EOF
-DB_HOST=$ADMIN_DB_HOST
-DB_PORT=$ADMIN_DB_PORT
-DB_NAME=$ADMIN_DB_NAME
-DB_USER=$ADMIN_DB_USER
-DB_PASSWORD=$ADMIN_DB_PASS
-EOF
-          chown root:www-data /etc/axialy_admin_env
-          chmod 640 /etc/axialy_admin_env
-
-    - name: Deploy API product → api droplet
-      if: success()
-      uses: appleboy/scp-action@v0.1.5
-      with:
-        host:       ${{ env.API_IP }}
-        username:   root
-        key:        ${{ env.DROPLET_SSH_KEY }}
-        passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
-        source:     axialy-api-product/*
-        target:     /var/www/html/
-        strip_components: 1
-        timeout:    120s
+      - name: Deploy API product to api droplet
+        if: success() && steps.filter.outputs.api == 'true'
+        uses: appleboy/scp-action@v0.1.5
+        with:
+          host:       ${{ env.API_IP }}
+          username:   root
+          key:        ${{ env.DROPLET_SSH_KEY }}
+          passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
+          source:     axialy-api-product/*
+          target:     /var/www/html/
+          strip_components: 1
+          timeout:    120s
