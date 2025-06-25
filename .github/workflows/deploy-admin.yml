@@ -1,36 +1,36 @@
 name: Deploy ADMIN Product
-
 on:
   push:
     branches: [ "main" ]
-    paths:
-      - "axialy-admin-product/**"
+    paths: [ "axialy-admin-product/**" ]
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     env:
       DIGITALOCEAN_TOKEN:      ${{ secrets.DIGITALOCEAN_TOKEN }}
       DROPLET_SSH_KEY:         ${{ secrets.DROPLET_SSH_KEY }}
       DROPLET_SSH_PASSPHRASE:  ${{ secrets.DROPLET_SSH_PASSPHRASE }}
+      DB_CLUSTER_NAME:         axialy-mysql          # <— constant
 
     steps:
-    # ──────────── 1 ─ Checkout ────────────
+    # ------------------------ 1  checkout ----------------------------------
     - uses: actions/checkout@v4
 
-    # ──────────── 2 ─ doctl ────────────
+    # ------------------------ 2  doctl -------------------------------------
     - name: Install & auth doctl
       run: |
-        ver=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest \
-                | grep '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/')
-        curl -sL "https://github.com/digitalocean/doctl/releases/download/v${ver}/doctl-${ver}-linux-amd64.tar.gz" \
-          | tar -xz
+        ver=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest |
+              grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
+        curl -sL "https://github.com/digitalocean/doctl/releases/download/v${ver}/doctl-${ver}-linux-amd64.tar.gz" |
+          tar -xz
         sudo mv doctl /usr/local/bin
         doctl auth init -t "$DIGITALOCEAN_TOKEN"
 
-    # ──────────── 3 ─ Find droplet ────────
+    # ------------------------ 3  find droplet ------------------------------
     - id: ip
-      name: Look up ADMIN droplet IP
+      name: Look-up ADMIN droplet IP
       run: |
         ip=$(doctl compute droplet list --format Name,PublicIPv4 --no-header \
                | awk '$1=="admin.axialy.ai"{print $2; exit}')
@@ -39,7 +39,7 @@ jobs:
         fi
         echo "ip=$ip" >> "$GITHUB_OUTPUT"
 
-    # ──────────── 4 ─ Wait for SSH ────────
+    # ------------------------ 4  wait for ssh ------------------------------
     - name: Wait for SSH
       run: |
         for i in {1..30}; do
@@ -48,7 +48,7 @@ jobs:
         done
         echo "::error::SSH never became ready"; exit 1
 
-    # ──────────── 5 ─ Ensure NGINX + PHP ─
+    # ------------------------ 5  ensure NGINX + PHP ------------------------
     - name: Install & configure NGINX + PHP-FPM
       uses: appleboy/ssh-action@v0.1.6
       with:
@@ -59,35 +59,23 @@ jobs:
         script: |
           set -e
           export DEBIAN_FRONTEND=noninteractive
-          # install nginx + php if missing
           if ! command -v nginx >/dev/null 2>&1; then
             apt-get update -y
             apt-get install -y nginx php-fpm php-mysql
           fi
-
-          # grab php-fpm socket path (first match)
           PHP_SOCK=$(ls /run/php/php*-fpm.sock | head -n1)
-
-          # configure default virtual host
           cat >/etc/nginx/sites-available/default <<EOF
           server {
               listen 80 default_server;
               listen [::]:80 default_server;
-
               root /var/www/html;
               index index.php index.html index.htm;
-
               server_name admin.axialy.ai _;
-
-              location / {
-                  try_files \$uri \$uri/ /index.php?\$args;
-              }
-
+              location / { try_files \$uri \$uri/ /index.php?\$args; }
               location ~ \.php$ {
                   include snippets/fastcgi-php.conf;
                   fastcgi_pass unix:${PHP_SOCK};
               }
-
               location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg)$ {
                   try_files \$uri =404;
                   expires max;
@@ -95,13 +83,54 @@ jobs:
               }
           }
           EOF
-
-          # enable & restart services
           systemctl enable --now nginx
-          systemctl restart  nginx
-          systemctl restart  php*-fpm
+          systemctl restart nginx
+          systemctl restart php*-fpm
 
-    # ──────────── 6 ─ Rsync build ─────────
+    # ------------------------ 6  WRITE env file ----------------------------
+    - name: Write /etc/axialy_admin_env
+      uses: appleboy/ssh-action@v0.1.6
+      with:
+        host:       ${{ steps.ip.outputs.ip }}
+        username:   root
+        key:        ${{ env.DROPLET_SSH_KEY }}
+        passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
+        script: |
+          set -e
+          # ---- discover cluster id by name ----
+          CLUSTER_ID=$(doctl databases list --format Name,ID --no-header \
+                         | awk '$1=="'"$DB_CLUSTER_NAME"'"{print $2; exit}')
+          if [ -z "$CLUSTER_ID" ]; then
+            echo "Cluster $DB_CLUSTER_NAME not found"; exit 1
+          fi
+
+          # ---- dedicated service user created by Terraform ----
+          ADMIN_APP_USER=$(doctl databases user list "$CLUSTER_ID" --format Name --no-header \
+                             | awk '$1=="axialy_admin_app"{print $1; exit}')
+          # 1-hour temp URI for that user
+          URI=$(doctl databases connection "$CLUSTER_ID" \
+                 --format "mysql://{{username}}:{{password}}@{{private_host}}:{{port}}/{{database}}" \
+                 --dbname Axialy_ADMIN \
+                 --username "$ADMIN_APP_USER" \
+                 --output text)
+
+          H=$(echo $URI | sed -E 's|mysql://[^@]+@([^:]+):([0-9]+)/.*|\1|')
+          P=$(echo $URI | sed -E 's|mysql://[^@]+@([^:]+):([0-9]+)/.*|\2|')
+          PASS=$(echo $URI | sed -E 's|mysql://[^:]+:([^@]+)@.*|\1|')
+
+          echo "::add-mask::$PASS"
+
+          cat >/etc/axialy_admin_env <<EOF
+DB_HOST=$H
+DB_PORT=$P
+DB_NAME=Axialy_ADMIN
+DB_USER=$ADMIN_APP_USER
+DB_PASSWORD=$PASS
+EOF
+
+          chmod 600 /etc/axialy_admin_env
+
+    # ------------------------ 7  rsync code -------------------------------
     - name: Rsync new build
       uses: appleboy/scp-action@v0.1.5
       with:
