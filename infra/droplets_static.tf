@@ -1,13 +1,4 @@
-# infra/droplets_static.tf
-resource "digitalocean_droplet" "static_sites" {
-  for_each  = toset(local.static_sites)      # ← now includes “admin”
-  name      = "${each.key}.axialy.ai"
-  region    = "sfo3"
-  size      = "s-1vcpu-1gb"
-  image     = "ubuntu-22-04-x64"
-
-  ssh_keys  = [var.ssh_fingerprint]
-  tags      = ["axialy", each.key]
-
-  user_data = local.static_site_user_data
-}
+# droplets_static.tf   – INTENTIONALLY BLANK
+#
+# All droplet resources have been consolidated into
+# infra/droplets.tf (digitalocean_droplet.sites).
