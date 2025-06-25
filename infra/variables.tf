@@ -60,3 +60,11 @@ variable "db_node_size" {
   type        = string
   default     = "db-s-1vcpu-1gb"
 }
+
+variable "static_sites" {
+  description = "Sub-domains that are served as simple static sites"
+  type        = list(string)
+
+  #   ⟵  REMOVE "admin" from the list
+  default     = ["root", "ui", "api"]
+}
