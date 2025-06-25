@@ -1,7 +1,5 @@
 ###############################################################################
-#  infra/main.tf  ·  2025-06-24
-#  – NO data "digitalocean_ssh_key" block (avoids the “name required” error)
-#  – Droplets take the fingerprint straight from var.ssh_fingerprint
+#  infra/main.tf
 ###############################################################################
 
 #########################
@@ -9,6 +7,7 @@
 #########################
 
 locals {
+  # cloud-init snippet that all NON-Admin droplets will keep using
   cloud_init = <<-EOF
     #cloud-config
     package_update: true
@@ -37,6 +36,7 @@ resource "digitalocean_project" "axialy" {
 #  Droplets
 #########################
 
+# ── Marketing / root ─────────────────────────────────────────────────────────
 resource "digitalocean_droplet" "root" {
   name       = var.domain
   region     = var.region
@@ -47,6 +47,7 @@ resource "digitalocean_droplet" "root" {
   user_data  = local.cloud_init
 }
 
+# ── UI ───────────────────────────────────────────────────────────────────────
 resource "digitalocean_droplet" "ui" {
   name       = "ui.${var.domain}"
   region     = var.region
@@ -57,6 +58,7 @@ resource "digitalocean_droplet" "ui" {
   user_data  = local.cloud_init
 }
 
+# ── ADMIN  ❱❱  uses its own cloud-init file  ❰❰──────────────────────────────
 resource "digitalocean_droplet" "admin" {
   name       = "admin.${var.domain}"
   region     = var.region
@@ -64,9 +66,12 @@ resource "digitalocean_droplet" "admin" {
   image      = var.droplet_image
   ssh_keys   = [var.ssh_fingerprint]
   tags       = concat(local.common_tags, ["admin"])
-  user_data  = local.cloud_init
+
+  # *** key line – loads the script you added in infra/cloud-init/admin.tpl
+  user_data  = file("${path.module}/cloud-init/admin.tpl")
 }
 
+# ── API ──────────────────────────────────────────────────────────────────────
 resource "digitalocean_droplet" "api" {
   name       = "api.${var.domain}"
   region     = var.region
