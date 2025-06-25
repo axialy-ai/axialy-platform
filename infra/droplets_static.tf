@@ -9,5 +9,5 @@ resource "digitalocean_droplet" "static_sites" {
   ssh_keys  = [var.ssh_fingerprint]
   tags      = ["axialy", each.key]
 
-  user_data = data.template_file.static_site.rendered
+  user_data = local.static_site_user_data
 }
