@@ -4,3 +4,4 @@ infra/.terraform/
 *.tfplan
 *.tfbackup
 .terraform.lock.hcl
+!*.tpl
