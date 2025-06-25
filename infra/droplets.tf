@@ -1,10 +1,9 @@
 ############################################
-#  Axialy - authoritative droplet template #
+#  Axialy – single authoritative droplet   #
+#           definition set                #
 ############################################
-#   ▸ Replaces ALL former per-droplet and
-#     static_sites definitions.
-#   ▸ Produces a single resource set:
-#       digitalocean_droplet.sites["…"]
+# Replaces every standalone droplet        #
+# resource that existed before.            #
 ############################################
 
 terraform {
@@ -17,15 +16,15 @@ terraform {
   }
 }
 
-# ─────────── VARIABLES ───────────
+# ────────── VARIABLES ──────────
 variable "region" {
-  description = "DigitalOcean region for all droplets"
+  description = "DigitalOcean region for all Axialy droplets"
   type        = string
   default     = "sfo3"
 }
 
 variable "ssh_fingerprint" {
-  description = "Fingerprint of the SSH key already uploaded to DO"
+  description = "Fingerprint of the already-uploaded SSH key"
   type        = string
 }
 
@@ -36,11 +35,11 @@ variable "droplet_names" {
 }
 
 locals {
-  image          = "ubuntu-22-04-x64"
-  cloudinit_dir  = "${path.module}/cloudinit"
+  image         = "ubuntu-22-04-x64"
+  cloudinit_dir = "${path.module}/cloudinit"
 }
 
-# ─────────── SINGLE DROPLET RESOURCE ───────────
+# ────────── DROPLET RESOURCE ──────────
 resource "digitalocean_droplet" "sites" {
   for_each = toset(var.droplet_names)
 
@@ -55,7 +54,7 @@ resource "digitalocean_droplet" "sites" {
   backups           = false
   graceful_shutdown = true
 
-  # Optional cloud-init; comment out if unused
+  # optional cloud-init per droplet
   user_data = fileexists("${local.cloudinit_dir}/${each.key}.yml")
               ? file("${local.cloudinit_dir}/${each.key}.yml")
               : null
@@ -63,7 +62,7 @@ resource "digitalocean_droplet" "sites" {
   tags = ["axialy", each.key]
 }
 
-# ─────────── PROJECT ATTACHMENT ───────────
+# ────────── ATTACH TO PROJECT ──────────
 resource "digitalocean_project_resources" "attach" {
   project   = digitalocean_project.axialy.id
   resources = [for d in digitalocean_droplet.sites : d.urn]
