@@ -7,6 +7,7 @@
 #########################
 
 locals {
+  # Generic cloud-init snippet used by every droplet *except* admin
   cloud_init = <<-EOF
     #cloud-config
     package_update: true
@@ -15,6 +16,7 @@ locals {
     runcmd:
       - systemctl enable --now nginx
       - ufw allow 'Nginx Full' || true
+      - rm -f /var/www/html/index.nginx-debian.html || true
   EOF
 
   common_tags = ["axialy"]
@@ -61,7 +63,7 @@ resource "digitalocean_droplet" "ui" {
   lifecycle { ignore_changes = [user_data] }
 }
 
-# ── ADMIN  (custom cloud-init) ───────────────────────────────────────────────
+# ── ADMIN (custom cloud-init) ────────────────────────────────────────────────
 resource "digitalocean_droplet" "admin" {
   name       = "admin.${var.domain}"
   region     = var.region
