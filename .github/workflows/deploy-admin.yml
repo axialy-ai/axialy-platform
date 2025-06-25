@@ -117,7 +117,10 @@ DB_NAME=Axialy_Admin
 DB_USER=$USER
 DB_PASSWORD=$PASS
 EOF
-          chmod 600 /etc/axialy_admin_env
+          # give only root and the web-server group read access
+          chown root:www-data /etc/axialy_admin_env
+          chmod 640 /etc/axialy_admin_env
+
 
     # ── 7. deploy build artefacts ───────────────────────────────────────────
     - name: Rsync admin build
