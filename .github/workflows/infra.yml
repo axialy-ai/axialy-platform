@@ -9,9 +9,9 @@ jobs:
   terraform:
     runs-on: ubuntu-latest
 
-    #──────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
     # Job-wide environment – ALL secrets UPPER-CASE
-    #──────────────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------------
     env:
       # DigitalOcean
       DIGITALOCEAN_TOKEN:      ${{ secrets.DIGITALOCEAN_TOKEN }}
@@ -19,7 +19,7 @@ jobs:
 
       # NameSilo
       NAMESILO_API_KEY:        ${{ secrets.NAMESILO_API_KEY }}
-      NAMESILO_DOMAIN:         axialy.ai    # literal
+      NAMESILO_DOMAIN:         axialy.ai      # literal
 
       # SSH key material
       DROPLET_SSH_KEY:         ${{ secrets.DROPLET_SSH_KEY }}
@@ -29,18 +29,18 @@ jobs:
       TF_VAR_ssh_fingerprint:  ${{ secrets.SSH_FINGERPRINT }}
 
     steps:
-      # ───────────────────── 1 — checkout repo ──────────────────────────────
+      # 1 — checkout repo
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ───────────────────── 2 — clean local TF artefacts ───────────────────
+      # 2 — clean any local TF artefacts left by cancelled runs
       - name: Remove stale Terraform artefacts
         run: |
           rm -f infra/terraform.tfstate*
           rm -f infra/.terraform.lock.hcl
           rm -rf infra/.terraform
 
-      # ───────────────────── 3 — detect content changes ─────────────────────
+      # 3 — detect which *product* folders changed (still useful for speed)
       - id: filter
         name: Detect content changes
         uses: dorny/paths-filter@v3
@@ -48,35 +48,31 @@ jobs:
           list-files: none
           initial-fetch-depth: 100
           filters: |
-            marketing:
-              - 'axialy-marketing-site/**'
-            ui:
-              - 'axialy-ui-product/**'
-            admin:
-              - 'axialy-admin-product/**'
-            api:
-              - 'axialy-api-product/**'
+            marketing: [ 'axialy-marketing-site/**' ]
+            ui:        [ 'axialy-ui-product/**'     ]
+            admin:     [ 'axialy-admin-product/**'  ]
+            api:       [ 'axialy-api-product/**'    ]
 
-      # ───────────────────── 4 — install doctl & authenticate ───────────────
+      # 4 — install doctl
       - name: Install doctl
         run: |
           set -e
-          VER=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest \
-                 | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
-          curl -sL "https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz" \
-            | tar -xz
+          VER=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest |
+                 grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
+          curl -sL "https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz" |
+            tar -xz
           sudo mv doctl /usr/local/bin
 
       - name: doctl auth
         run: doctl auth init -t "$DIGITALOCEAN_TOKEN"
 
-      # ───────────────────── 5 — install Terraform CLI ──────────────────────
+      # 5 — install Terraform CLI
       - name: Set up Terraform CLI
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.8.2
 
-      # ───────────────────── 6 — init / import / plan / apply ───────────────
+      # 6 — init / import / plan / apply
       - name: Terraform init
         run: terraform -chdir=infra init
 
@@ -96,7 +92,7 @@ jobs:
         if: github.ref == 'refs/heads/main'
         run: terraform -chdir=infra apply -auto-approve -input=false
 
-      # ───────────────────── 7 — capture droplet IPs ────────────────────────
+      # 7 — capture droplet IPs from TF outputs
       - id: ips
         name: Capture droplet IPs
         run: |
@@ -106,7 +102,7 @@ jobs:
           echo "API_IP=$(   echo "$IPS" | jq -r '.api')"   >> "$GITHUB_ENV"
           echo "ADMIN_IP=$( echo "$IPS" | jq -r '.admin')" >> "$GITHUB_ENV"
 
-      # ───────────────────── 8 — wait for SSH on each droplet ───────────────
+      # 8 — wait until SSH answers on every droplet
       - name: Wait for SSH on droplets
         shell: bash
         run: |
@@ -124,7 +120,7 @@ jobs:
           wait_ssh "$ADMIN_IP"
           wait_ssh "$API_IP"
 
-      # ───────────────────── 9 — update NameSilo DNS ────────────────────────
+      # 9 — update NameSilo DNS
       - name: Update NameSilo DNS
         if: github.ref == 'refs/heads/main'
         env:
@@ -132,9 +128,9 @@ jobs:
           NAMESILO_DOMAIN:  ${{ env.NAMESILO_DOMAIN }}
         run: bash infra/update_namesilo.sh
 
-      # ───────────────────── 10 — SCP deployments ───────────────────────────
+      # 10 — *always* copy the latest build artefacts to every droplet
+      # -------------------------------------------------------------------
       - name: Deploy marketing site to root droplet
-        if: success() && steps.filter.outputs.marketing == 'true'
         uses: appleboy/scp-action@v0.1.5
         with:
           host:       ${{ env.ROOT_IP }}
@@ -147,7 +143,6 @@ jobs:
           timeout:    120s
 
       - name: Deploy UI product to ui droplet
-        if: success() && steps.filter.outputs.ui == 'true'
         uses: appleboy/scp-action@v0.1.5
         with:
           host:       ${{ env.UI_IP }}
@@ -160,7 +155,6 @@ jobs:
           timeout:    120s
 
       - name: Deploy Admin product to admin droplet
-        if: success() && steps.filter.outputs.admin == 'true'
         uses: appleboy/scp-action@v0.1.5
         with:
           host:       ${{ env.ADMIN_IP }}
@@ -173,7 +167,6 @@ jobs:
           timeout:    120s
 
       - name: Deploy API product to api droplet
-        if: success() && steps.filter.outputs.api == 'true'
         uses: appleboy/scp-action@v0.1.5
         with:
           host:       ${{ env.API_IP }}
