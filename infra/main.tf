@@ -1,5 +1,5 @@
 ###############################################################################
-#  infra/main.tf
+# infra/main.tf
 ###############################################################################
 
 #########################
@@ -7,7 +7,6 @@
 #########################
 
 locals {
-  # cloud-init that the three front-end droplets share
   cloud_init = <<-EOF
     #cloud-config
     package_update: true
@@ -46,10 +45,7 @@ resource "digitalocean_droplet" "root" {
   tags       = concat(local.common_tags, ["www"])
   user_data  = local.cloud_init
 
-  # Never rebuild this droplet just because user_data differs
-  lifecycle {
-    ignore_changes = [user_data]
-  }
+  lifecycle { ignore_changes = [user_data] }
 }
 
 # ── UI ───────────────────────────────────────────────────────────────────────
@@ -62,12 +58,10 @@ resource "digitalocean_droplet" "ui" {
   tags       = concat(local.common_tags, ["ui"])
   user_data  = local.cloud_init
 
-  lifecycle {
-    ignore_changes = [user_data]
-  }
+  lifecycle { ignore_changes = [user_data] }
 }
 
-# ── ADMIN  ❱❱  custom cloud-init  ❰❰─────────────────────────────────────────
+# ── ADMIN  (custom cloud-init) ───────────────────────────────────────────────
 resource "digitalocean_droplet" "admin" {
   name       = "admin.${var.domain}"
   region     = var.region
@@ -75,8 +69,6 @@ resource "digitalocean_droplet" "admin" {
   image      = var.droplet_image
   ssh_keys   = [var.ssh_fingerprint]
   tags       = concat(local.common_tags, ["admin"])
-
-  # points at the script you added earlier
   user_data  = file("${path.module}/cloud-init/admin.tpl")
 }
 
@@ -90,33 +82,7 @@ resource "digitalocean_droplet" "api" {
   tags       = concat(local.common_tags, ["api"])
   user_data  = local.cloud_init
 
-  lifecycle {
-    ignore_changes = [user_data]
-  }
-}
-
-#########################
-#  Managed MySQL cluster
-#########################
-
-resource "digitalocean_database_cluster" "mysql" {
-  name       = "axialy-db-cluster"
-  engine     = "mysql"
-  version    = "8"
-  size       = "db-s-1vcpu-1gb"
-  region     = var.region
-  node_count = 1
-  project_id = digitalocean_project.axialy.id
-}
-
-resource "digitalocean_database_db" "ui" {
-  cluster_id = digitalocean_database_cluster.mysql.id
-  name       = "Axialy_UI"
-}
-
-resource "digitalocean_database_db" "admin" {
-  cluster_id = digitalocean_database_cluster.mysql.id
-  name       = "Axialy_Admin"
+  lifecycle { ignore_changes = [user_data] }
 }
 
 #########################
@@ -130,6 +96,6 @@ resource "digitalocean_project_resources" "attach" {
     digitalocean_droplet.ui.urn,
     digitalocean_droplet.admin.urn,
     digitalocean_droplet.api.urn,
-    digitalocean_database_cluster.mysql.urn
+    digitalocean_database_cluster.mysql.urn      # defined in cluster.tf
   ]
 }
