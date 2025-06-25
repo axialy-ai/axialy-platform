@@ -1,5 +1,3 @@
-# .github/workflows/deploy-admin.yml
-# ─────────────────────────────────────────────────────────────────────────────
 name: Deploy ADMIN Product
 
 on:
@@ -14,56 +12,68 @@ jobs:
       DIGITALOCEAN_TOKEN:      ${{ secrets.DIGITALOCEAN_TOKEN }}
       DROPLET_SSH_KEY:         ${{ secrets.DROPLET_SSH_KEY }}
       DROPLET_SSH_PASSPHRASE:  ${{ secrets.DROPLET_SSH_PASSPHRASE }}
-      DB_CLUSTER_NAME:         axialy-mysql         # must equal cluster.tf name
+      DB_CLUSTER_NAME:         axialy-mysql        #  ← exactly the name in cluster.tf
 
     steps:
-    # 1 – Checkout repo -------------------------------------------------------
+    # ── 1. Checkout ─────────────────────────────────────────────────────────
     - uses: actions/checkout@v4
 
-    # 2 – Install doctl & authenticate ---------------------------------------
+    # ── 2. doctl on the runner ──────────────────────────────────────────────
     - name: Install & auth doctl
       run: |
         set -e
-        ver=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest |
-               grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
-        curl -sL "https://github.com/digitalocean/doctl/releases/download/v${ver}/doctl-${ver}-linux-amd64.tar.gz" |
-          tar -xz
+        ver=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest \
+               | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
+        curl -sL "https://github.com/digitalocean/doctl/releases/download/v${ver}/doctl-${ver}-linux-amd64.tar.gz" \
+          | tar -xz
         sudo mv doctl /usr/local/bin
         doctl auth init -t "$DIGITALOCEAN_TOKEN"
 
-    # 3 – Find admin droplet --------------------------------------------------
+    # ── 3. Find the admin droplet IP ────────────────────────────────────────
     - id: ip
-      name: Lookup admin droplet IP
       run: |
         ip=$(doctl compute droplet list --format Name,PublicIPv4 --no-header |
              awk '$1=="admin.axialy.ai"{print $2; exit}')
         [ -n "$ip" ] || { echo "::error::admin droplet not found"; exit 1; }
         echo "ip=$ip" >> "$GITHUB_OUTPUT"
 
-    # 4 – Wait for SSH --------------------------------------------------------
-    - name: Wait for SSH
-      run: |
+    # ── 4. Wait for SSH to be ready ─────────────────────────────────────────
+    - run: |
         for i in {1..30}; do
           nc -z -w3 ${{ steps.ip.outputs.ip }} 22 && exit 0
           sleep 5
         done
         echo "::error::SSH never became ready"; exit 1
 
-    # 5 – Ensure NGINX + PHP on droplet --------------------------------------
-    - name: Install & configure NGINX + PHP
+    # ── 5. Provision the droplet (NGINX + PHP + /etc/axialy_admin_env) ─────
+    - name: Configure droplet + write env file
       uses: appleboy/ssh-action@v0.1.6
+      envs: DIGITALOCEAN_TOKEN,DB_CLUSTER_NAME
       with:
         host:       ${{ steps.ip.outputs.ip }}
         username:   root
         key:        ${{ env.DROPLET_SSH_KEY }}
         passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
-        script: |
+        script: |-
           set -e
           export DEBIAN_FRONTEND=noninteractive
+
+          # ── install prerequisites ───────────────────────────────
           apt-get update -y
-          apt-get install -y nginx php-fpm php-mysql
+          apt-get install -y curl tar gzip nginx php-fpm php-mysql
           PHP_SOCK=$(ls /run/php/php*-fpm.sock | head -n1)
-          tee /etc/nginx/sites-available/default >/dev/null <<NGINX
+
+          # ── very small doctl install (single binary) ────────────
+          if ! command -v doctl >/dev/null; then
+            ver=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest \
+                   | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
+            curl -sL "https://github.com/digitalocean/doctl/releases/download/v${ver}/doctl-${ver}-linux-amd64.tar.gz" \
+              | tar -xz -C /usr/local/bin
+          fi
+          doctl auth init -t "$DIGITALOCEAN_TOKEN"
+
+          # ── write NGINX vhost ───────────────────────────────────
+          cat >/etc/nginx/sites-available/default <<NGINX
           server {
             listen 80 default_server;
             listen [::]:80 default_server;
@@ -78,38 +88,28 @@ NGINX
           systemctl enable --now nginx
           systemctl restart nginx php*-fpm
 
-    # 6 – Provision /etc/axialy_admin_env (DB creds) --------------------------
-    - name: Provision DB env file
-      uses: appleboy/ssh-action@v0.1.6
-      with:
-        host:       ${{ steps.ip.outputs.ip }}
-        username:   root
-        key:        ${{ env.DROPLET_SSH_KEY }}
-        passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
-        script: |-
-          set -e
-          CLUSTER_ID=$(doctl databases list --format Name,ID --no-header |
-                        awk '$1=="'"$DB_CLUSTER_NAME"'"{print $2; exit}')
+          # ── fetch DB creds and drop /etc/axialy_admin_env ───────
+          CID=$(doctl databases list --format Name,ID --no-header |
+                awk '$1=="'"$DB_CLUSTER_NAME"'"{print $2; exit}')
           USER="axialy_admin_app"
-          URI=$(doctl databases connection "$CLUSTER_ID" \
+          URI=$(doctl databases connection "$CID" \
                  --format "mysql://{{username}}:{{password}}@{{private_host}}:{{port}}/{{database}}" \
                  --username "$USER" --dbname Axialy_Admin --output text)
-          HOST=$(echo "$URI" | sed -E 's#mysql://[^@]+@([^:]+):([0-9]+)/.*#\1#')
-          PORT=$(echo "$URI" | sed -E 's#mysql://[^@]+@([^:]+):([0-9]+)/.*#\2#')
-          PASS=$(echo "$URI" | sed -E 's#mysql://[^:]+:([^@]+)@.*#\1#')
-          echo "::add-mask::$PASS"
+          H=$(echo "$URI" | sed -E 's#mysql://[^@]+@([^:]+):([0-9]+)/.*#\1#')
+          P=$(echo "$URI" | sed -E 's#mysql://[^@]+@([^:]+):([0-9]+)/.*#\2#')
+          PW=$(echo "$URI" | sed -E 's#mysql://[^:]+:([^@]+)@.*#\1#')
+
           cat >/etc/axialy_admin_env <<EOF
-DB_HOST=$HOST
-DB_PORT=$PORT
+DB_HOST=$H
+DB_PORT=$P
 DB_NAME=Axialy_Admin
 DB_USER=$USER
-DB_PASSWORD=$PASS
+DB_PASSWORD=$PW
 EOF
           chmod 600 /etc/axialy_admin_env
 
-    # 7 – Rsync code to droplet ----------------------------------------------
-    - name: Rsync admin build
-      uses: appleboy/scp-action@v0.1.5
+    # ── 6. Rsync the admin codebase ─────────────────────────────────────────
+    - uses: appleboy/scp-action@v0.1.5
       with:
         host:       ${{ steps.ip.outputs.ip }}
         username:   root
