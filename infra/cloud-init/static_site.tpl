@@ -42,4 +42,5 @@ runcmd:
   - systemctl enable --now nginx
   - systemctl enable --now php8.1-fpm
 
-final_message: "cloud-init finished – ${HOSTNAME}"
+# note the doubled “$$” so Terraform leaves it untouched
+final_message: "cloud-init finished – $${HOSTNAME}"
