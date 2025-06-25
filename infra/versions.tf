@@ -1,6 +1,7 @@
 ###############################################################################
-# Lock the DigitalOcean provider at 2.54.x
-# 2.55.0 and later have a bug that breaks `digitalocean_database_db` creation
+#  infra/versions.tf
+#  • Locks Terraform itself at 1.8.x
+#  • Pins the DigitalOcean provider one step *before* the buggy 2.54/2.55 line
 ###############################################################################
 
 terraform {
@@ -9,7 +10,7 @@ terraform {
   required_providers {
     digitalocean = {
       source  = "digitalocean/digitalocean"
-      version = "~> 2.54.0"   # ← pin here
+      version = "~> 2.53.0"   # ← roll back one minor to dodge the DB-inconsistency bug
     }
 
     null = {
