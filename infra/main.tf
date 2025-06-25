@@ -7,7 +7,7 @@
 #########################
 
 locals {
-  # cloud-init snippet that all NON-Admin droplets will keep using
+  # cloud-init that the three front-end droplets share
   cloud_init = <<-EOF
     #cloud-config
     package_update: true
@@ -45,6 +45,11 @@ resource "digitalocean_droplet" "root" {
   ssh_keys   = [var.ssh_fingerprint]
   tags       = concat(local.common_tags, ["www"])
   user_data  = local.cloud_init
+
+  # Never rebuild this droplet just because user_data differs
+  lifecycle {
+    ignore_changes = [user_data]
+  }
 }
 
 # ── UI ───────────────────────────────────────────────────────────────────────
@@ -56,9 +61,13 @@ resource "digitalocean_droplet" "ui" {
   ssh_keys   = [var.ssh_fingerprint]
   tags       = concat(local.common_tags, ["ui"])
   user_data  = local.cloud_init
+
+  lifecycle {
+    ignore_changes = [user_data]
+  }
 }
 
-# ── ADMIN  ❱❱  uses its own cloud-init file  ❰❰──────────────────────────────
+# ── ADMIN  ❱❱  custom cloud-init  ❰❰─────────────────────────────────────────
 resource "digitalocean_droplet" "admin" {
   name       = "admin.${var.domain}"
   region     = var.region
@@ -67,7 +76,7 @@ resource "digitalocean_droplet" "admin" {
   ssh_keys   = [var.ssh_fingerprint]
   tags       = concat(local.common_tags, ["admin"])
 
-  # *** key line – loads the script you added in infra/cloud-init/admin.tpl
+  # points at the script you added earlier
   user_data  = file("${path.module}/cloud-init/admin.tpl")
 }
 
@@ -80,6 +89,10 @@ resource "digitalocean_droplet" "api" {
   ssh_keys   = [var.ssh_fingerprint]
   tags       = concat(local.common_tags, ["api"])
   user_data  = local.cloud_init
+
+  lifecycle {
+    ignore_changes = [user_data]
+  }
 }
 
 #########################
