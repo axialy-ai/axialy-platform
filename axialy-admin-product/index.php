@@ -1,5 +1,8 @@
 <?php
-// /home/i17z4s936h3j/public_html/admin.axiaba.com/index.php
+ini_set('display_errors', 1);
+ini_set('display_startup_errors', 1);
+error_reporting(E_ALL);
+
 session_name('axiaba_admin_session');
 session_start();
 require_once __DIR__ . '/includes/AdminDBConfig.php';
