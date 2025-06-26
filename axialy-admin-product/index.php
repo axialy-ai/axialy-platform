@@ -1,270 +1,173 @@
 <?php
-ini_set('display_errors', 1);
-ini_set('display_startup_errors', 1);
-error_reporting(E_ALL);
-
+// axialy-admin-product/index.php
 session_name('axiaba_admin_session');
 session_start();
+
 require_once __DIR__ . '/includes/AdminDBConfig.php';
 use AxiaBA\AdminConfig\AdminDBConfig;
 
-// Check if the default 'caseylide' user exists in AxiaBA_ADMIN.admin_users table:
-$adminDB = AdminDBConfig::getInstance()->getPdo();
-$stmt = $adminDB->prepare("SELECT COUNT(*) FROM admin_users WHERE username = 'caseylide'");
-$stmt->execute();
-$caseylideExists = (bool)$stmt->fetchColumn();
+/* --------------------------------------------------------------------------
+   1.  Resolve DB connection (handled inside the singleton)                 
+   -------------------------------------------------------------------------- */
+$pdo = AdminDBConfig::getInstance()->getPdo();
 
-if (!$caseylideExists) {
-    // Show the overlay / initialization flow.
-    ?>
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-      <meta charset="UTF-8">
-      <title>AxiaBA Admin - Initialization</title>
-      <style>
-        body {
-          font-family: sans-serif;
-          margin: 0; 
-          padding: 0;
-          background: #f0f0f0;
-        }
-        .header {
-          background: #fff;
-          padding: 15px;
-          border-bottom: 1px solid #ddd;
-          text-align: center;
-        }
-        .header img {
-          height: 50px;
-        }
-        .overlay {
-          position: fixed;
-          top: 0; left: 0;
-          width: 100%; height: 100%;
-          background: rgba(0,0,0,0.5);
-          display: flex;
-          justify-content: center;
-          align-items: center;
-          z-index: 9999;
-        }
-        .overlay-content {
-          background: #fff;
-          padding: 30px;
-          border-radius: 8px;
-          max-width: 400px;
-          width: 90%;
-          text-align: center;
-        }
-        .overlay h2 {
-          margin-top: 0;
-        }
-        .overlay input[type="password"] {
-          width: 100%;
-          padding: 10px;
-          margin: 1em 0;
-          font-size: 16px;
-        }
-        .overlay .buttons {
-          margin-top: 1em;
-        }
-        .overlay button {
-          padding: 10px 20px;
-          margin: 0 10px;
-          cursor: pointer;
-        }
-        @media (max-width: 768px) {
-          body {
-            flex-direction: column;
-            height: auto;
-          }
-          #left-panel, #right-panel {
-            width: 100% !important;
-            max-width: 100% !important;
-            height: auto;
-          }
-          #left-panel.expanded, #left-panel.collapsed {
-            width: 100% !important;
-            max-width: 100% !important;
-          }
-          #toggle-btn {
-            margin-bottom: 10px;
-          }
-          #panel-header h1,
-          #right-header-left strong {
-            font-size: 1rem;
-          }
-        }
-      </style>
-    </head>
-    <body>
-      <div class="header">
-        <img src="https://axiaba.com/assets/img/product_logo.png" alt="AxiaBA Logo">
+/* --------------------------------------------------------------------------
+   2.  Read “bootstrap admin” values from ENV (fallbacks keep legacy dev)   
+   -------------------------------------------------------------------------- */
+$DEF_USER     = getenv('ADMIN_DEFAULT_USER')     ?: 'caseylide';
+$DEF_EMAIL    = getenv('ADMIN_DEFAULT_EMAIL')    ?: 'caseylide@gmail.com';
+$DEF_PASSWORD = getenv('ADMIN_DEFAULT_PASSWORD') ?: 'Casellio';
+
+/* --------------------------------------------------------------------------
+   3.  If the default admin does NOT exist yet, show first-run overlay       
+   -------------------------------------------------------------------------- */
+$stmt = $pdo->prepare("SELECT COUNT(*) FROM admin_users WHERE username = :u");
+$stmt->execute([':u' => $DEF_USER]);
+$adminExists = (bool) $stmt->fetchColumn();
+
+if (!$adminExists): ?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Axialy Admin – Initialization</title>
+  <style>
+    body{font-family:sans-serif;margin:0;padding:0;background:#f0f0f0}
+    .header{background:#fff;padding:15px;border-bottom:1px solid #ddd;text-align:center}
+    .header img{height:50px}
+    .overlay{position:fixed;top:0;left:0;width:100%;height:100%;
+             background:rgba(0,0,0,.5);display:flex;justify-content:center;
+             align-items:center;z-index:9999}
+    .overlay-content{background:#fff;padding:30px;border-radius:8px;
+                     max-width:400px;width:90%;text-align:center}
+    .overlay h2{margin-top:0}
+    .overlay input{width:100%;padding:10px;margin:1em 0;font-size:16px}
+    .overlay .buttons{margin-top:1em}
+    .overlay button{padding:10px 20px;margin:0 10px;cursor:pointer}
+    @media(max-width:768px){
+      #left-panel,#right-panel{width:100%!important;max-width:100%!important;height:auto}
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <img src="https://axiaba.com/assets/img/product_logo.png" alt="Axialy Logo">
+  </div>
+
+  <div class="overlay">
+    <div class="overlay-content">
+      <h2>Welcome to Axialy Platform Administration</h2>
+      <p>The system is awaiting input from the primary administrator.</p>
+      <input type="password" id="initPass" placeholder="Enter admin code…">
+      <div class="buttons">
+        <button id="btnEnter">Enter</button>
+        <button id="btnExit">Exit</button>
       </div>
-      <div class="overlay">
-        <div class="overlay-content">
-          <h2>Welcome to AxiaBA Platform Administration</h2>
-          <p>The system is awaiting input from the primary administrator.</p>
-          <input type="password" id="initPass" placeholder="Enter admin code..." />
-          <div class="buttons">
-            <button id="btnEnter">Enter</button>
-            <button id="btnExit">Exit</button>
-          </div>
-        </div>
-      </div>
-      <script>
-      const inputField = document.getElementById('initPass');
-      const btnEnter = document.getElementById('btnEnter');
-      const btnExit = document.getElementById('btnExit');
+    </div>
+  </div>
 
-      btnEnter.addEventListener('click', function() {
-        window.location.href = 'https://www.axiaba.com';
-      });
+  <script>
+    const PASS = <?php echo json_encode($DEF_PASSWORD); ?>;
 
-      btnExit.addEventListener('click', async function() {
-        const val = inputField.value.trim();
-        if (val === 'Casellio') {
-          try {
-            const resp = await fetch('init_user.php', { method: 'POST' });
-            const data = await resp.json();
-            if (data.success) {
-              alert('Initial admin user created. You may now log in as "caseylide".');
-              location.reload();
-            } else {
-              alert('Error creating user: ' + data.message);
-            }
-          } catch (err) {
-            alert('AJAX error: ' + err);
+    document.getElementById('btnEnter').onclick = () => {
+      window.location.href = 'https://www.axiaba.com';
+    };
+
+    document.getElementById('btnExit').onclick = async () => {
+      const val = document.getElementById('initPass').value.trim();
+      if (val === PASS) {
+        try {
+          const resp = await fetch('init_user.php', {method:'POST'});
+          const data = await resp.json();
+          if (data.success) {
+            alert('Initial admin user created. You may now log in as "<?php echo htmlspecialchars($DEF_USER); ?>".');
+            location.reload();
+          } else {
+            alert('Error: '+data.message);
           }
-        } else {
-          // typed something else => do nothing or show a small error
+        } catch (err) {
+          alert('AJAX error: '+err);
         }
-      });
-      </script>
-    </body>
-    </html>
-    <?php
-    exit;
-}
+      }
+    };
+  </script>
+</body>
+</html>
+<?php
+  /* stop here so normal dashboard isn’t rendered */
+  exit;
+endif;
 
-// If we get here, 'caseylide' user exists:
+/* --------------------------------------------------------------------------
+   4.  Default admin exists – proceed with normal authenticated dashboard    
+   -------------------------------------------------------------------------- */
 require_once __DIR__ . '/includes/admin_auth.php';
 requireAdminAuth();
 
-// environment selection logic
-$validEnvs = ['production','clients','beta','test','uat','firstlook','aii']; // <-- ADDED "aii"
+/* ---------- environment selector (unchanged) ---------------------------- */
+$validEnvs = ['production','clients','beta','test','uat','firstlook','aii'];
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['env_select'])) {
     $choice = $_POST['env_select'];
-    if (in_array($choice, $validEnvs)) {
+    if (in_array($choice, $validEnvs, true)) {
         $_SESSION['admin_env'] = $choice;
     }
     header('Location: index.php');
     exit;
 }
-
-// Default environment if not chosen
 $env = $_SESSION['admin_env'] ?? 'production';
-
 $mapping = [
-    'production' => 'https://app.axiaba.com',
-    'clients'    => 'https://clients.axiaba.com',
-    'beta'       => 'https://beta.axiaba.com',
-    'test'       => 'https://app-test.axiaba.com',
-    'uat'        => 'https://app-uat.axiaba.com',
-    'firstlook'  => 'https://firstlook.axiaba.com',
-    'aii'        => 'https://aii.axiaba.com'  // <-- ADDED "aii" mapping
+  'production' => 'https://app.axiaba.com',
+  'clients'    => 'https://clients.axiaba.com',
+  'beta'       => 'https://beta.axiaba.com',
+  'test'       => 'https://app-test.axiaba.com',
+  'uat'        => 'https://app-uat.axiaba.com',
+  'firstlook'  => 'https://firstlook.axiaba.com',
+  'aii'        => 'https://aii.axiaba.com'
 ];
-
 $uiUrl = $mapping[$env] ?? 'https://app.axiaba.com';
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>AxiaBA Admin - Home</title>
+  <title>Axialy Admin – Home</title>
   <style>
-    body {
-      font-family: sans-serif;
-      margin: 0;
-      padding: 0;
-      background: #f9f9f9;
-    }
-    .header {
-      background: #fff;
-      padding: 15px;
-      border-bottom: 1px solid #ccc;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-    .header-left {
-      display: flex;
-      align-items: center;
-      gap: 15px;
-    }
-    .header-left img {
-      height: 50px;
-    }
-    .container {
-      max-width: 800px;
-      margin: 30px auto;
-      background: #fff;
-      padding: 20px;
-      border: 1px solid #ccc;
-      border-radius: 6px;
-    }
-    .env-box {
-      margin: 1em 0;
-      padding: 1em;
-      border: 1px solid #ccc;
-      background: #f9f9f9;
-    }
-    form {
-      margin-bottom: 20px;
-    }
-    select {
-      padding: 5px;
-    }
-    .button {
-      display: inline-block;
-      margin: 0.5em 0;
-      padding: 0.5em 1em;
-      background: #007BFF;
-      color: #fff;
-      text-decoration: none;
-      border-radius: 4px;
-    }
-    .button:hover {
-      background: #0056b3;
-    }
-    .logout-btn {
-      background: #dc3545 !important;
-      margin-left: 20px;
-    }
-    h1 {
-      margin: 0;
-      font-size: 1.4rem;
-    }
-    .link-block {
-      margin: 1em 0;
-    }
+    body{font-family:sans-serif;margin:0;padding:0;background:#f9f9f9}
+    .header{background:#fff;padding:15px;border-bottom:1px solid #ccc;
+            display:flex;justify-content:space-between;align-items:center}
+    .header-left{display:flex;align-items:center;gap:15px}
+    .header-left img{height:50px}
+    .container{max-width:800px;margin:30px auto;background:#fff;
+               padding:20px;border:1px solid #ccc;border-radius:6px}
+    .env-box{margin:1em 0;padding:1em;border:1px solid #ccc;background:#f9f9f9}
+    form{margin-bottom:20px}
+    select{padding:5px}
+    .button{display:inline-block;margin:.5em 0;padding:.5em 1em;
+            background:#007BFF;color:#fff;text-decoration:none;border-radius:4px}
+    .button:hover{background:#0056b3}
+    .logout-btn{background:#dc3545!important;margin-left:20px}
+    h1{margin:0;font-size:1.4rem}
+    .link-block{margin:1em 0}
   </style>
 </head>
 <body>
   <div class="header">
     <div class="header-left">
-      <img src="https://axiaba.com/assets/img/SOI.png" alt="AxiaBA Logo">
-      <h1>AxiaBA Admin</h1>
+      <img src="https://axiaba.com/assets/img/SOI.png" alt="Axialy Logo">
+      <h1>Axialy Admin</h1>
     </div>
     <div>
       <a class="button logout-btn" href="/logout.php">Logout</a>
     </div>
   </div>
+
   <div class="container">
     <p>Welcome, Admin. You are logged in.</p>
+
     <div class="env-box">
       <strong>Current Environment:</strong> <?php echo htmlspecialchars($env); ?>
     </div>
+
     <form method="POST">
       <label for="env_select">Switch Environment:</label>
       <select name="env_select" id="env_select">
@@ -276,6 +179,7 @@ $uiUrl = $mapping[$env] ?? 'https://app.axiaba.com';
       </select>
       <button type="submit" class="button">Apply</button>
     </form>
+
     <div class="link-block">
       <a class="button" href="/docs_admin.php">Open Documentation Management</a>
     </div>
@@ -290,7 +194,7 @@ $uiUrl = $mapping[$env] ?? 'https://app.axiaba.com';
     </div>
     <div class="link-block">
       <a class="button" href="<?php echo $uiUrl; ?>" target="_blank">
-        Open AxiaBA UI (<?php echo htmlspecialchars($env); ?>) in New Tab
+        Open Axialy UI (<?php echo htmlspecialchars($env); ?>)
       </a>
     </div>
   </div>
