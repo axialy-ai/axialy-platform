@@ -3,7 +3,7 @@ name: Terraform DigitalOcean
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
 
 jobs:
   terraform:
@@ -52,23 +52,31 @@ jobs:
             ui:        [ 'axialy-ui-product/**'     ]
             admin:     [ 'axialy-admin-product/**'  ]
             api:       [ 'axialy-api-product/**'    ]
-    
-    #4 ─────────────── Install latest doctl ───────────────
-    - name: Install doctl
-      run: |
-        set -euo pipefail                     # fail on any error (incl. pipes)
-    
-        # fetch latest tag (no trailing newline)
-        VER=$(curl -sSf https://api.github.com/repos/digitalocean/doctl/releases/latest \
-                | jq -r '.tag_name' | sed 's/^v//')
-    
-        # download the tarball (-f = fail if 4xx/5xx)
-        curl -sSLf -o /tmp/doctl.tgz \
-             "https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz"
-    
-        # unpack and install
-        tar -xzf /tmp/doctl.tgz -C /tmp
-        sudo install -m 755 /tmp/doctl /usr/local/bin
+
+      # 4 —───────────── Install latest doctl ─────────────
+      - name: Install doctl
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # ensure jq exists (normally pre-installed on GitHub runners)
+          command -v jq >/dev/null 2>&1 || {
+            sudo apt-get update -y
+            sudo apt-get install -y jq
+          }
+
+          # fetch latest tag (strip leading “v”)
+          VER=$(curl -sSf https://api.github.com/repos/digitalocean/doctl/releases/latest \
+                  | jq -r '.tag_name' | sed 's/^v//')
+
+          # download & verify
+          curl -sSLf -o /tmp/doctl.tgz \
+               "https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz"
+
+          # unpack and install atomically
+          tar -xzf /tmp/doctl.tgz -C /tmp
+          sudo install -m 755 /tmp/doctl /usr/local/bin
+          echo "Installed $(doctl version)"
 
       # 5 — install Terraform CLI
       - name: Set up Terraform CLI
@@ -132,8 +140,7 @@ jobs:
           NAMESILO_DOMAIN:  ${{ env.NAMESILO_DOMAIN }}
         run: bash infra/update_namesilo.sh
 
-      # 10 — *always* copy the latest build artefacts to every droplet
-      # -------------------------------------------------------------------
+      # 10 — always copy the latest build artefacts to every droplet
       - name: Deploy marketing site to root droplet
         uses: appleboy/scp-action@v0.1.5
         with:
