@@ -1,10 +1,13 @@
+infra/firewall.tf
+───────────────────────────────────────────────────────────────────────────────
 ########################################
 #  DigitalOcean Cloud-Firewall rules   #
 ########################################
 
 resource "digitalocean_firewall" "web" {
-  name        = "axialy-web-allow-80-443"
+  name = "axialy-web-allow-80-443"
 
+  # ───────────── inbound ─────────────
   inbound_rule {
     protocol         = "tcp"
     port_range       = "80"
@@ -17,13 +20,14 @@ resource "digitalocean_firewall" "web" {
     source_addresses = ["0.0.0.0/0", "::/0"]
   }
 
-  # Keep outbound wide-open (default DO behaviour)
+  # ───────────── outbound ────────────
+  # keep outbound wide-open (DO default)
   outbound_rule {
     protocol              = "tcp"
     port_range            = "0"
     destination_addresses = ["0.0.0.0/0", "::/0"]
   }
 
-  # Attach to every droplet carrying the “axialy” tag
-  droplet_tag = "axialy"
+  # attach to every droplet that carries the tag “axialy”
+  droplet_tags = ["axialy"]
 }
