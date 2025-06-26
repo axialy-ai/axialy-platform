@@ -2,7 +2,7 @@
 package_update: true
 packages:
   - nginx
-  - php-fpm
+  - php-fpm            # lets you drop in a PHP front-end later
   - unzip
 
 write_files:
@@ -23,6 +23,7 @@ write_files:
     content: |
       server {
         listen 80 default_server;
+        listen [::]:80 default_server;
         root /var/www/html;
         index index.php index.html;
 
@@ -41,6 +42,8 @@ write_files:
 runcmd:
   - systemctl enable --now nginx
   - systemctl enable --now php8.1-fpm
+  - ufw allow 'Nginx Full' || true            # ← **fix: open 80/443**
+  - rm -f /var/www/html/index.nginx-debian.html || true
 
-# note the doubled “$$” so Terraform leaves it untouched
+# leave this intact so cloud-init expands it at boot
 final_message: "cloud-init finished – $${HOSTNAME}"
