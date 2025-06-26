@@ -1,0 +1,116 @@
+name: provision-and-deploy
+
+on:
+  push:
+    branches: [ main ]
+
+env:
+  DIGITALOCEAN_TOKEN:      ${{ secrets.DIGITALOCEAN_TOKEN }}
+  TF_VAR_do_token:         ${{ secrets.DIGITALOCEAN_TOKEN }}
+  NAMESILO_API_KEY:        ${{ secrets.NAMESILO_API_KEY }}
+  NAMESILO_DOMAIN:         axialy.ai
+  DROPLET_SSH_KEY:         ${{ secrets.DROPLET_SSH_KEY }}
+  DROPLET_SSH_PASSPHRASE:  ${{ secrets.DROPLET_SSH_PASSPHRASE }}
+  TF_VAR_ssh_fingerprint:  ${{ secrets.TF_VAR_ssh_fingerprint }}
+
+jobs:
+  all:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash -eo pipefail
+
+    steps:
+    - uses: actions/checkout@v4
+
+    # ------- Terraform -------------------------------------------------
+    - uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.8.2
+        terraform_wrapper: true
+
+    - name: Terraform init / apply
+      run: |
+        terraform -chdir=infra init
+        terraform -chdir=infra apply -auto-approve -input=false
+
+    # ------- Capture outputs we need later -----------------------------
+    - id: ips
+      run: |
+        echo "json=$(terraform -chdir=infra output -json droplet_ips)" >>"$GITHUB_OUTPUT"
+
+    - id: db
+      run: |
+        echo "host=$(terraform -chdir=infra output -raw mysql_host)"      >>"$GITHUB_OUTPUT"
+        echo "port=$(terraform -chdir=infra output -raw mysql_port)"      >>"$GITHUB_OUTPUT"
+        echo "user=$(terraform -chdir=infra output -raw mysql_user)"      >>"$GITHUB_OUTPUT"
+        echo "pass=$(terraform -chdir=infra output -raw mysql_password)"  >>"$GITHUB_OUTPUT"
+
+    # -------------------------------------------------------------------
+    # Re-usable function that scp’s one product to a droplet
+    # -------------------------------------------------------------------
+    - name: Copy code products to droplets
+      uses: appleboy/scp-action@v0.1.5
+      with:
+        host:   ${{ fromJson(steps.ips.outputs.json).root }}
+        username: root
+        key: ${{ env.DROPLET_SSH_KEY }}
+        passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
+        source: axialy-marketing-site/*
+        target: /var/www/html/
+        strip_components: 1
+        timeout: 120s
+
+    - name: Copy UI
+      uses: appleboy/scp-action@v0.1.5
+      with:
+        host:   ${{ fromJson(steps.ips.outputs.json).ui }}
+        username: root
+        key: ${{ env.DROPLET_SSH_KEY }}
+        passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
+        source: axialy-ui-product/*
+        target: /var/www/html/
+        strip_components: 1
+
+    - name: Copy Admin
+      uses: appleboy/scp-action@v0.1.5
+      with:
+        host:   ${{ fromJson(steps.ips.outputs.json).admin }}
+        username: root
+        key: ${{ env.DROPLET_SSH_KEY }}
+        passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
+        source: axialy-admin-product/*
+        target: /var/www/html/
+        strip_components: 1
+
+    - name: Copy API
+      uses: appleboy/scp-action@v0.1.5
+      with:
+        host:   ${{ fromJson(steps.ips.outputs.json).api }}
+        username: root
+        key: ${{ env.DROPLET_SSH_KEY }}
+        passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
+        source: axialy-api-product/*
+        target: /var/www/html/
+        strip_components: 1
+
+    # -------------------------------------------------------------------
+    # ⬇️  NEW: write the .env file that AdminDBConfig will consume
+    # -------------------------------------------------------------------
+    - name: Provision DB credentials on Admin droplet
+      uses: appleboy/ssh-action@v0.1.5
+      with:
+        host:   ${{ fromJson(steps.ips.outputs.json).admin }}
+        username: root
+        key: ${{ env.DROPLET_SSH_KEY }}
+        passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
+        script: |
+          cat >/var/www/html/.env <<'ENV'
+          DB_HOST=${{ steps.db.outputs.host }}
+          DB_PORT=${{ steps.db.outputs.port }}
+          DB_NAME=Axialy_Admin
+          DB_USER=${{ steps.db.outputs.user }}
+          DB_PASSWORD=${{ steps.db.outputs.pass }}
+          ENV
+          chown www-data:www-data /var/www/html/.env
+          systemctl reload php8.1-fpm || true
