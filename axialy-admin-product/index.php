@@ -6,47 +6,48 @@ session_start();
 require_once __DIR__ . '/includes/AdminDBConfig.php';
 use AxiaBA\AdminConfig\AdminDBConfig;
 
-/* --------------------------------------------------------------------------
-   1.  Resolve DB connection (handled inside the singleton)                 
-   -------------------------------------------------------------------------- */
+/* ───────────────────────────────────────────────────────────────────────────
+   1.  DB connection (AdminDBConfig handles env/file fallback)               
+   ───────────────────────────────────────────────────────────────────────── */
 $pdo = AdminDBConfig::getInstance()->getPdo();
 
-/* --------------------------------------------------------------------------
-   2.  Read “bootstrap admin” values from ENV (fallbacks keep legacy dev)   
-   -------------------------------------------------------------------------- */
-$DEF_USER     = getenv('ADMIN_DEFAULT_USER')     ?: 'caseylide';
-$DEF_EMAIL    = getenv('ADMIN_DEFAULT_EMAIL')    ?: 'caseylide@gmail.com';
-$DEF_PASSWORD = getenv('ADMIN_DEFAULT_PASSWORD') ?: 'Casellio';
+/* ───────────────────────────────────────────────────────────────────────────
+   2.  Read bootstrap-admin secrets — **MUST** be set in the environment     
+       (no hard-coded fallbacks — fail fast if missing)                      
+   ───────────────────────────────────────────────────────────────────────── */
+$DEF_USER     = getenv('ADMIN_DEFAULT_USER');
+$DEF_EMAIL    = getenv('ADMIN_DEFAULT_EMAIL');
+$DEF_PASSWORD = getenv('ADMIN_DEFAULT_PASSWORD');
 
-/* --------------------------------------------------------------------------
-   3.  If the default admin does NOT exist yet, show first-run overlay       
-   -------------------------------------------------------------------------- */
+if (!$DEF_USER || !$DEF_EMAIL || !$DEF_PASSWORD) {
+    http_response_code(500);
+    echo '<h1>Server mis-configuration</h1>'
+       . '<p>ADMIN_DEFAULT_* environment variables are not set.</p>';
+    exit;
+}
+
+/* ───────────────────────────────────────────────────────────────────────────
+   3.  If default admin does NOT exist yet, show first-run overlay           
+   ───────────────────────────────────────────────────────────────────────── */
 $stmt = $pdo->prepare("SELECT COUNT(*) FROM admin_users WHERE username = :u");
 $stmt->execute([':u' => $DEF_USER]);
-$adminExists = (bool) $stmt->fetchColumn();
+$needsBootstrap = ! (bool) $stmt->fetchColumn();
 
-if (!$adminExists): ?>
+if ($needsBootstrap): ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Axialy Admin – Initialization</title>
+  <title>Axialy Admin – Initialisation</title>
   <style>
     body{font-family:sans-serif;margin:0;padding:0;background:#f0f0f0}
     .header{background:#fff;padding:15px;border-bottom:1px solid #ddd;text-align:center}
     .header img{height:50px}
-    .overlay{position:fixed;top:0;left:0;width:100%;height:100%;
-             background:rgba(0,0,0,.5);display:flex;justify-content:center;
-             align-items:center;z-index:9999}
-    .overlay-content{background:#fff;padding:30px;border-radius:8px;
-                     max-width:400px;width:90%;text-align:center}
-    .overlay h2{margin-top:0}
-    .overlay input{width:100%;padding:10px;margin:1em 0;font-size:16px}
-    .overlay .buttons{margin-top:1em}
-    .overlay button{padding:10px 20px;margin:0 10px;cursor:pointer}
-    @media(max-width:768px){
-      #left-panel,#right-panel{width:100%!important;max-width:100%!important;height:auto}
-    }
+    .overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);
+             display:flex;align-items:center;justify-content:center;z-index:9999}
+    .panel{background:#fff;padding:30px;border-radius:8px;max-width:400px;width:90%;text-align:center}
+    input{width:100%;padding:10px;margin:1em 0;font-size:16px}
+    button{padding:10px 20px;margin:0 10px;cursor:pointer}
   </style>
 </head>
 <body>
@@ -55,56 +56,57 @@ if (!$adminExists): ?>
   </div>
 
   <div class="overlay">
-    <div class="overlay-content">
+    <div class="panel">
       <h2>Welcome to Axialy Platform Administration</h2>
-      <p>The system is awaiting input from the primary administrator.</p>
-      <input type="password" id="initPass" placeholder="Enter admin code…">
-      <div class="buttons">
-        <button id="btnEnter">Enter</button>
-        <button id="btnExit">Exit</button>
+      <p>The system is awaiting initialisation by the primary administrator.</p>
+      <input type="password" id="bootstrapCode" placeholder="Enter admin code …">
+      <div>
+        <button id="btnExit">Initialise</button>
+        <button id="btnCancel">Cancel</button>
       </div>
     </div>
   </div>
 
   <script>
-    const PASS = <?php echo json_encode($DEF_PASSWORD); ?>;
-
-    document.getElementById('btnEnter').onclick = () => {
+    document.getElementById('btnCancel').onclick = () =>
       window.location.href = 'https://www.axiaba.com';
-    };
 
     document.getElementById('btnExit').onclick = async () => {
-      const val = document.getElementById('initPass').value.trim();
-      if (val === PASS) {
-        try {
-          const resp = await fetch('init_user.php', {method:'POST'});
-          const data = await resp.json();
-          if (data.success) {
-            alert('Initial admin user created. You may now log in as "<?php echo htmlspecialchars($DEF_USER); ?>".');
-            location.reload();
-          } else {
-            alert('Error: '+data.message);
-          }
-        } catch (err) {
-          alert('AJAX error: '+err);
+      const code = document.getElementById('bootstrapCode').value.trim();
+      if (!code) return;
+
+      try {
+        const resp = await fetch('init_user.php', {
+          method: 'POST',
+          headers: {'Content-Type':'application/x-www-form-urlencoded'},
+          body: 'code=' + encodeURIComponent(code)
+        });
+        const data = await resp.json();
+        if (data.success) {
+          alert('Initial admin user created. You may now log in as '
+                + <?php echo json_encode($DEF_USER); ?> + '.');
+          location.reload();
+        } else {
+          alert(data.message || 'Initialisation failed.');
         }
+      } catch (e) {
+        alert('Network error: ' + e);
       }
     };
   </script>
 </body>
 </html>
 <?php
-  /* stop here so normal dashboard isn’t rendered */
   exit;
 endif;
 
-/* --------------------------------------------------------------------------
+/* ───────────────────────────────────────────────────────────────────────────
    4.  Default admin exists – proceed with normal authenticated dashboard    
-   -------------------------------------------------------------------------- */
+   ───────────────────────────────────────────────────────────────────────── */
 require_once __DIR__ . '/includes/admin_auth.php';
 requireAdminAuth();
 
-/* ---------- environment selector (unchanged) ---------------------------- */
+/* ---------- environment selector ---------------------------------------- */
 $validEnvs = ['production','clients','beta','test','uat','firstlook','aii'];
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['env_select'])) {
     $choice = $_POST['env_select'];
@@ -156,9 +158,7 @@ $uiUrl = $mapping[$env] ?? 'https://app.axiaba.com';
       <img src="https://axiaba.com/assets/img/SOI.png" alt="Axialy Logo">
       <h1>Axialy Admin</h1>
     </div>
-    <div>
-      <a class="button logout-btn" href="/logout.php">Logout</a>
-    </div>
+    <div><a class="button logout-btn" href="/logout.php">Logout</a></div>
   </div>
 
   <div class="container">
@@ -180,18 +180,10 @@ $uiUrl = $mapping[$env] ?? 'https://app.axiaba.com';
       <button type="submit" class="button">Apply</button>
     </form>
 
-    <div class="link-block">
-      <a class="button" href="/docs_admin.php">Open Documentation Management</a>
-    </div>
-    <div class="link-block">
-      <a class="button" href="/promo_codes_admin.php">Manage Promo Codes</a>
-    </div>
-    <div class="link-block">
-      <a class="button" href="/issues_admin.php">Manage Issues</a>
-    </div>
-    <div class="link-block">
-      <a class="button" href="/db_viewer_admin.php">Open Data Inspector</a>
-    </div>
+    <div class="link-block"><a class="button" href="/docs_admin.php">Documentation Management</a></div>
+    <div class="link-block"><a class="button" href="/promo_codes_admin.php">Promo Codes</a></div>
+    <div class="link-block"><a class="button" href="/issues_admin.php">Issue Tracker</a></div>
+    <div class="link-block"><a class="button" href="/db_viewer_admin.php">Data Inspector</a></div>
     <div class="link-block">
       <a class="button" href="<?php echo $uiUrl; ?>" target="_blank">
         Open Axialy UI (<?php echo htmlspecialchars($env); ?>)
