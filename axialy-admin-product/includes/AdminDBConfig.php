@@ -1,14 +1,10 @@
 <?php
 namespace AxiaBA\AdminConfig;
 
-require_once __DIR__ . '/bootstrap_env.php';  // NEW – load vars from /etc/axialy_admin_env
-
 /**
- * Singleton wrapper around the Axialy-Admin database connection.
- *
- * Priority order for config values
- * 1. Real environment variables provided by the droplet
- * 2. Legacy `.env.admin` file (useful on a developer workstation)
+ * Singleton wrapper for Admin DB.
+ *   1️⃣  looks for DB_* environment variables injected by deploy workflow
+ *   2️⃣  falls back to legacy /private_axiaba/.env.admin for dev boxes
  */
 class AdminDBConfig
 {
@@ -17,55 +13,53 @@ class AdminDBConfig
 
     private function __construct()
     {
-        // ---------- 1) try real env-vars (preferred on DigitalOcean) ----------
-        $host = getenv('DB_HOST');
+        // ── 1️⃣  modern env-vars path ───────────────────────────────────────
+        $host = getenv('DB_HOST');   // host or host:port
+        $port = getenv('DB_PORT');   // optional
         $db   = getenv('DB_NAME');
         $user = getenv('DB_USER');
         $pass = getenv('DB_PASSWORD');
 
-        // ---------- 2) fall back to the legacy .env.admin if any are missing ----------
-        if (!$host || !$db || !$user || !$pass) {
-            // same location you had on GoDaddy; change if you moved it locally
-            $legacyFile = dirname(__DIR__, 2) . '/private_axiaba/.env.admin';
-
-            if (!file_exists($legacyFile)) {
-                throw new \RuntimeException(
-                    "Missing DB credentials – neither \$ENV nor {$legacyFile} supplied."
-                );
-            }
-
-            foreach (file($legacyFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
-                if (preg_match('/^\s*#/', $line) || !str_contains($line, '=')) {
-                    continue;
-                }
-                [$k, $v] = explode('=', $line, 2);
-                $k = trim($k);
-                $v = trim($v);
-                if (!getenv($k)) {          // don’t overwrite real env-vars
-                    putenv("$k=$v");
-                }
-            }
-
-            // re-pull after populating
-            $host = getenv('DB_HOST');
-            $db   = getenv('DB_NAME');
-            $user = getenv('DB_USER');
-            $pass = getenv('DB_PASSWORD');
+        if ($host && $db && $user && $pass) {
+            if ($port) $host .= ':' . $port;
+            $this->connect($host, $db, $user, $pass);
+            return;
         }
 
-        // ---------- 3) final sanity check ----------
-        if (!$host || !$db || !$user || !$pass) {
-            throw new \RuntimeException('Still missing one or more DB_* variables after all attempts.');
+        // ── 2️⃣  legacy fallback ────────────────────────────────────────────
+        $envFile = '/home/i17z4s936h3j/private_axiaba/.env.admin';
+        if (!file_exists($envFile)) {
+            throw new \RuntimeException(
+                'Missing DB credentials – neither environment variables nor '
+              . "$envFile present."
+            );
         }
 
-        // ---------- 4) make the connection ----------
-        $dsn       = "mysql:host={$host};dbname={$db};charset=utf8mb4";
+        foreach (file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $ln) {
+            if ($ln === '' || $ln[0] === '#') continue;
+            if (!str_contains($ln, '='))        continue;
+            [$k, $v] = array_map('trim', explode('=', $ln, 2));
+            putenv("$k=$v");
+        }
+
+        $host = getenv('DB_HOST');
+        $port = getenv('DB_PORT');
+        $db   = getenv('DB_NAME');
+        $user = getenv('DB_USER');
+        $pass = getenv('DB_PASSWORD');
+        if ($port) $host .= ':' . $port;
+
+        $this->connect($host, $db, $user, $pass);
+    }
+
+    private function connect(string $host, string $db, string $user, string $pass): void
+    {
+        $dsn      = "mysql:host=$host;dbname=$db;charset=utf8mb4";
         $this->pdo = new \PDO($dsn, $user, $pass, [
             \PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION,
         ]);
     }
 
-    /** @noinspection PhpHierarchyChecksInspection */
     public static function getInstance(): self
     {
         return self::$instance ??= new self();
@@ -75,8 +69,4 @@ class AdminDBConfig
     {
         return $this->pdo;
     }
-
-    // prevent cloning / unserialising
-    private function __clone()             {}
-    public function __wakeup(): void       {}
 }
