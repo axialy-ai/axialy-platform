@@ -1,41 +1,16 @@
-############################
-# Droplet public addresses #
-############################
+########################################
+# Public IPv4 addresses for each host  #
+########################################
 output "droplet_ips" {
-  description = "Public IPv4 for each Axialy droplet"
-  value = {
-    admin = digitalocean_droplet.admin.ipv4_address
-    ui    = digitalocean_droplet.ui.ipv4_address
-    api   = digitalocean_droplet.api.ipv4_address
-    root  = digitalocean_droplet.root.ipv4_address
-  }
+  description = "Public IPv4 for every Axialy droplet"
+  value       = { for k, d in digitalocean_droplet.sites : k => d.ipv4_address }
 }
 
-############################
-# Admin-app MySQL details  #
-############################
-output "admin_db_host" {
-  description = "Hostname of the managed MySQL cluster"
-  value       = digitalocean_database_cluster.mysql.host
-}
-
-output "admin_db_port" {
-  description = "Port of the MySQL cluster"
-  value       = digitalocean_database_cluster.mysql.port
-}
-
-output "admin_db_user" {
-  description = "Username used by the admin application"
-  value       = digitalocean_database_user.admin_app.name
-}
-
-output "admin_db_password" {
-  description = "Password for the admin application DB user"
-  value       = digitalocean_database_user.admin_app.password
-  sensitive   = true
-}
-
-output "admin_db_name" {
-  description = "Database name used by the admin application"
-  value       = digitalocean_database_db.admin.name
-}
+########################################
+# Admin-app MySQL connection details   #
+########################################
+output "admin_db_host"     { value = digitalocean_database_cluster.mysql.host }
+output "admin_db_port"     { value = digitalocean_database_cluster.mysql.port }
+output "admin_db_user"     { value = digitalocean_database_user.admin_app.name }
+output "admin_db_password" { value = digitalocean_database_user.admin_app.password sensitive = true }
+output "admin_db_name"     { value = digitalocean_database_db.admin.name }
