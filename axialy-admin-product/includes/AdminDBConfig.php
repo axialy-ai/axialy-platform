@@ -1,72 +1,18 @@
 <?php
-/**
- *  Axialy ▸ AdminDBConfig
- *  ---------------------------------------------------------------
- *  PDO singleton for the Axialy_ADMIN schema.
- *  Primary source of truth is the environment variables injected by
- *  GitHub Actions → PHP-FPM (`DB_HOST DB_PORT DB_NAME DB_USER DB_PASSWORD`).
- *  A legacy fallback still parses a local .env.admin if the variables
- *  are missing, so you can run the code on a laptop without Docker.
- */
+/*  Axialy ▸ shared DB helper
+    Drop-in replacement — no other files need to change                */
 
 namespace Axialy\AdminConfig;
 
 final class AdminDBConfig
 {
     private static ?self $instance = null;
-    private \PDO $pdo;
+    private \PDO        $pdo;
 
-    /** @throws \RuntimeException */
-    private function __construct()
-    {
-        /* ---------- 1) read env vars injected by IaC ---------------------- */
-        $host = getenv('DB_HOST');
-        $port = getenv('DB_PORT') ?: '3306';
-        $db   = getenv('DB_NAME');
-        $user = getenv('DB_USER');
-        $pass = getenv('DB_PASSWORD');
+    /* ----------------------------------------------------------------- */
+    /*  Public API                                                       */
+    /* ----------------------------------------------------------------- */
 
-        /* ---------- 2) dev-only fallback to .env.admin -------------------- */
-        if (!$host || !$db || !$user || !$pass) {
-            $legacyFile = __DIR__ . '/../../private_axiaba/.env.admin';
-            if (is_file($legacyFile)) {
-                self::loadDotEnv($legacyFile);
-                $host = $host ?: getenv('DB_HOST');
-                $port = $port ?: getenv('DB_PORT') ?: '3306';
-                $db   = $db   ?: getenv('DB_NAME');
-                $user = $user ?: getenv('DB_USER');
-                $pass = $pass ?: getenv('DB_PASSWORD');
-            }
-        }
-
-        if (!$host || !$db || !$user || !$pass) {
-            throw new \RuntimeException(
-                'AdminDBConfig: missing DB_* environment variables after all fallbacks.'
-            );
-        }
-
-        /* ---------- 3) open PDO connection -------------------------------- */
-        $dsn      = "mysql:host={$host};port={$port};dbname={$db};charset=utf8mb4";
-        $this->pdo = new \PDO($dsn, $user, $pass, [
-            \PDO::ATTR_ERRMODE            => \PDO::ERRMODE_EXCEPTION,
-            \PDO::ATTR_DEFAULT_FETCH_MODE => \PDO::FETCH_ASSOC,
-        ]);
-    }
-
-    /* --------------------------------------------------------------------- */
-    private static function loadDotEnv(string $file): void
-    {
-        foreach (file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
-            if ($line[0] === '#' || !str_contains($line, '=')) {
-                continue;
-            }
-            [$k, $v] = array_map('trim', explode('=', $line, 2));
-            $v = preg_replace('/^([\'"])(.*)\1$/', '$2', $v); // strip quotes
-            putenv("$k=$v");
-        }
-    }
-
-    /* --------------------------------------------------------------------- */
     public static function getInstance(): self
     {
         return self::$instance ??= new self();
@@ -77,6 +23,83 @@ final class AdminDBConfig
         return $this->pdo;
     }
 
+    /* This method must be public since PHP 8.1, even if it does nothing */
+    public function __wakeup(): void {}
+
+    /* ----------------------------------------------------------------- */
+    /*  Internals                                                        */
+    /* ----------------------------------------------------------------- */
+
+    private function __construct()
+    {
+        $cfg = $this->resolveConfig();   // ← the ✨ new part
+
+        $dsn = sprintf(
+            'mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4',
+            $cfg['host'],
+            $cfg['port'] ?? 3306,
+            $cfg['name']
+        );
+
+        $this->pdo = new \PDO(
+            $dsn,
+            $cfg['user'],
+            $cfg['pass'],
+            [
+                \PDO::ATTR_ERRMODE            => \PDO::ERRMODE_EXCEPTION,
+                \PDO::ATTR_DEFAULT_FETCH_MODE => \PDO::FETCH_ASSOC,
+            ]
+        );
+    }
+
+    /** Try ENV first, then .env file beside index.php. */
+    private function resolveConfig(): array
+    {
+        $pull = static fn(string $k) => getenv($k) ?: null;
+
+        $cfg = [
+            'host' => $pull('DB_HOST'),
+            'port' => $pull('DB_PORT') ?: 3306,
+            'name' => $pull('DB_NAME'),
+            'user' => $pull('DB_USER'),
+            'pass' => $pull('DB_PASSWORD'),
+        ];
+        if ($this->isComplete($cfg)) {
+            return $cfg;
+        }
+
+        /* Fallback: parse .env (KEY=VAL per line, # comments ignored) */
+        $envFile = dirname(__DIR__, 1) . '/.env';
+        if (is_readable($envFile)) {
+            foreach (file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
+                if ($line[0] === '#' || !str_contains($line, '=')) {
+                    continue;
+                }
+                [$k, $v] = explode('=', $line, 2);
+                putenv(trim($k) . '=' . trim($v));
+            }
+
+            $cfg = [
+                'host' => getenv('DB_HOST'),
+                'port' => getenv('DB_PORT') ?: 3306,
+                'name' => getenv('DB_NAME'),
+                'user' => getenv('DB_USER'),
+                'pass' => getenv('DB_PASSWORD'),
+            ];
+            if ($this->isComplete($cfg)) {
+                return $cfg;
+            }
+        }
+
+        throw new \RuntimeException(
+            'AdminDBConfig: DB_* variables not found in the environment or .env file.'
+        );
+    }
+
+    private function isComplete(array $c): bool
+    {
+        return $c['host'] && $c['name'] && $c['user'] && $c['pass'];
+    }
+
     private function __clone() {}
-    private function __wakeup() {}
 }
