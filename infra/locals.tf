@@ -1,11 +1,6 @@
 # infra/locals.tf
 locals {
-  # every entry in this list gets the generic “static site” droplet build
-  # (Nginx + PHP + env-file support from cloud-init)
-  static_sites = [
-    "root",
-    "ui",
-    "api",
-    "admin"   # ← NEW
-  ]
+  # Every hostname in var.static_sites gets the generic “static-site” build.
+  # The Admin droplet uses its dedicated cloud-init template instead.
+  static_sites = var.static_sites            # ← no hard-coded “admin” here
 }
