@@ -1,172 +1,141 @@
-name: Terraform-provision & full deploy
-
+name: Provision + Deploy Axialy stack
 on:
   push:
-    branches: [ "main" ]        # README edit triggers everything
+    branches: [main]
 
-env:                             # repo-level secrets (unchanged)
+#########################
+#  repo-wide secrets
+#########################
+env:
   DIGITALOCEAN_TOKEN:      ${{ secrets.DIGITALOCEAN_TOKEN }}
   TF_VAR_do_token:         ${{ secrets.DIGITALOCEAN_TOKEN }}
+
   NAMESILO_API_KEY:        ${{ secrets.NAMESILO_API_KEY }}
-  NAMESILO_DOMAIN:         axialy.ai
+  NAMESILO_DOMAIN:         axialy.ai            # literal
+
   DROPLET_SSH_KEY:         ${{ secrets.DROPLET_SSH_KEY }}
   DROPLET_SSH_PASSPHRASE:  ${{ secrets.DROPLET_SSH_PASSPHRASE }}
   TF_VAR_ssh_fingerprint:  ${{ secrets.SSH_FINGERPRINT }}
 
-  # defaults for the Admin app’s first user
-  ADMIN_DEFAULT_USER:      ${{ secrets.ADMIN_DEFAULT_USER }}
-  ADMIN_DEFAULT_EMAIL:     ${{ secrets.ADMIN_DEFAULT_EMAIL }}
-  ADMIN_DEFAULT_PASSWORD:  ${{ secrets.ADMIN_DEFAULT_PASSWORD }}
-
 jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    env:
-      DEBIAN_FRONTEND: noninteractive    # avoids apt prompts
+  all:
+    runs-on: ubuntu-24.04
+    defaults: { run: { shell: bash -eo pipefail } }
 
     steps:
-    # ───────────────────────────────────────────────────────────── 1 ▸ checkout
+    # ───────────────── 1.  checkout ─────────────────
     - uses: actions/checkout@v4
 
-    # ───────────────────────────────────────────────────────────── 2 ▸ tooling
+    # ───────────────── 2.  terraform cli ────────────
     - uses: hashicorp/setup-terraform@v3
-      with:
-        terraform_version: 1.8.2
+      with: { terraform_version: 1.8.2 }
 
-    - name: Install doctl
+    # ───────────────── 3.  terraform apply ──────────
+    - name: Terraform init → apply
       run: |
-        VER=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest |
-              jq -r .tag_name | tr -d 'v')
-        curl -sL https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz \
-          | tar -xz
-        sudo mv doctl /usr/local/bin
-        doctl auth init -t "$DIGITALOCEAN_TOKEN"
+        terraform -chdir=infra init
+        terraform -chdir=infra apply -auto-approve -input=false
 
-    # ───────────────────────────────────────────────────────────── 3 ▸ terraform
-    - name: Terraform init
-      run: terraform -chdir=infra init
-
-    - name: Import pre-existing DO resources (safe no-ops on fresh account)
-      run: bash infra/import_existing.sh
-
-    - name: Terraform apply
-      run: terraform -chdir=infra apply -auto-approve -input=false
-
-    # ───────────────────────────────────────────────────────────── 4 ▸ outputs
-    - id: tf-out
+    # ───────────────── 4.  capture outputs ──────────
+    - id: capture
       run: |
-        echo "ips=$(terraform -chdir=infra output -json droplet_ips)"           >> $GITHUB_OUTPUT
-        echo "db_host=$(terraform -chdir=infra output -raw mysql_host)"         >> $GITHUB_OUTPUT
-        echo "db_port=$(terraform -chdir=infra output -raw mysql_port)"         >> $GITHUB_OUTPUT
-        echo "db_user=$(terraform -chdir=infra output -raw mysql_user)"         >> $GITHUB_OUTPUT
-        echo "db_pass=$(terraform -chdir=infra output -raw mysql_password)"     >> $GITHUB_OUTPUT
+        # droplet IPs → env vars
+        IPS=$(terraform -chdir=infra output -json droplet_ips)
+        echo "ROOT_IP=$(  jq -r '.root'  <<<"$IPS")"  >>"$GITHUB_ENV"
+        echo "UI_IP=$(    jq -r '.ui'    <<<"$IPS")"  >>"$GITHUB_ENV"
+        echo "ADMIN_IP=$( jq -r '.admin' <<<"$IPS")"  >>"$GITHUB_ENV"
+        echo "API_IP=$(   jq -r '.api'   <<<"$IPS")"  >>"$GITHUB_ENV"
 
-    # convert IP JSON → env vars the next steps can read
-    - run: |
-        jq -r 'to_entries[] | "export " + (.key|ascii_upcase)+"_IP=" + .value' \
-          <<<"${{ steps.tf-out.outputs.ips }}" >> $GITHUB_ENV
+        # DB connection → env vars
+        echo "DB_HOST=$(terraform -chdir=infra output -raw mysql_host)"      >>"$GITHUB_ENV"
+        echo "DB_PORT=$(terraform -chdir=infra output -raw mysql_port)"      >>"$GITHUB_ENV"
+        echo "DB_USER=$(terraform -chdir=infra output -raw mysql_user)"      >>"$GITHUB_ENV"
+        echo "DB_PASSWORD=$(terraform -chdir=infra output -raw mysql_password)" >>"$GITHUB_ENV"
+        echo "::add-mask::$DB_PASSWORD"
 
-    # ───────────────────────────────────────────────────────────── 5 ▸ wait SSH
-    - name: ⏳ wait for SSH on droplets
+    # ───────────────── 5.  wait for ssh ─────────────
+    - name: ⏳ wait for SSH on all droplets
       run: |
-        for host in $ROOT_IP $UI_IP $ADMIN_IP $API_IP; do
-          echo "waiting on $host…"
-          for _ in {1..30}; do nc -z -w3 "$host" 22 && break; sleep 5; done
-        done
+        wait_ssh () {
+          local host=$1
+          echo "… $host"
+          for i in {1..30}; do nc -z -w3 "$host" 22 && return; sleep 5; done
+          echo "::error::$host never became reachable"; exit 1
+        }
+        wait_ssh "$ROOT_IP"; wait_ssh "$UI_IP"; wait_ssh "$ADMIN_IP"; wait_ssh "$API_IP"
 
-    # ───────────────────────────────────────────────────────────── 6 ▸ DB schema
-    - name: Load / refresh MySQL schemas
-      env:
-        MYSQL_PWD: ${{ steps.tf-out.outputs.db_pass }}
-      run: |
-        for f in db/*.sql; do
-          echo "⛴  applying $f"
-          mysql -h${{ steps.tf-out.outputs.db_host }} \
-                -P${{ steps.tf-out.outputs.db_port }} \
-                -u${{ steps.tf-out.outputs.db_user }} \
-                $(basename "$f" .sql) < "$f"
-        done
-
-    # ───────────────────────────────────────────────────────────── 7 ▸ rsync code
-    - name: Deploy marketing → root
-      uses: appleboy/scp-action@v0.1.5
-      with:
-        host: ${{ env.ROOT_IP }}
-        username: root
-        key: ${{ env.DROPLET_SSH_KEY }}
-        passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
-        source: axialy-marketing-site/*
-        target: /var/www/html/
-        strip_components: 1
-
-    - name: Deploy UI → ui
-      uses: appleboy/scp-action@v0.1.5
-      with:
-        host: ${{ env.UI_IP }}
-        username: root
-        key: ${{ env.DROPLET_SSH_KEY }}
-        passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
-        source: axialy-ui-product/*
-        target: /var/www/html/
-        strip_components: 1
-
-    - name: Deploy API → api
-      uses: appleboy/scp-action@v0.1.5
-      with:
-        host: ${{ env.API_IP }}
-        username: root
-        key: ${{ env.DROPLET_SSH_KEY }}
-        passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
-        source: axialy-api-product/*
-        target: /var/www/html/
-        strip_components: 1
-
-    - name: Deploy Admin → admin
-      uses: appleboy/scp-action@v0.1.5
-      with:
-        host: ${{ env.ADMIN_IP }}
-        username: root
-        key: ${{ env.DROPLET_SSH_KEY }}
-        passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
-        source: axialy-admin-product/*
-        target: /var/www/html/
-        strip_components: 1
-
-    # ───────────────────────────────────────────────────────────── 8 ▸ .env file
-    - name: Write .env on admin droplet
-      uses: appleboy/ssh-action@v0.1.6
-      with:
-        host: ${{ env.ADMIN_IP }}
-        username: root
-        key: ${{ env.DROPLET_SSH_KEY }}
-        passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
-        envs: |
-          DB_HOST=${{ steps.tf-out.outputs.db_host }}
-          DB_PORT=${{ steps.tf-out.outputs.db_port }}
-          DB_USER=${{ steps.tf-out.outputs.db_user }}
-          DB_PASS=${{ steps.tf-out.outputs.db_pass }}
-          ADMIN_DEFAULT_USER
-          ADMIN_DEFAULT_EMAIL
-          ADMIN_DEFAULT_PASSWORD
-        script: |
-          cat >/var/www/html/.env <<EOF
-          DB_HOST=${DB_HOST}
-          DB_PORT=${DB_PORT}
-          DB_NAME=Axialy_Admin
-          DB_USER=${DB_USER}
-          DB_PASSWORD=${DB_PASS}
-
-          ADMIN_DEFAULT_USER=${ADMIN_DEFAULT_USER}
-          ADMIN_DEFAULT_EMAIL=${ADMIN_DEFAULT_EMAIL}
-          ADMIN_DEFAULT_PASSWORD=${ADMIN_DEFAULT_PASSWORD}
-          EOF
-          chown www-data:www-data /var/www/html/.env
-          systemctl reload php8.1-fpm || true
-
-    # ───────────────────────────────────────────────────────────── 9 ▸ namesilo
-    - name: Sync NameSilo DNS
+    # ───────────────── 6.  update DNS ───────────────
+    - name: Update NameSilo zone
       env:
         NAMESILO_API_KEY: ${{ env.NAMESILO_API_KEY }}
         NAMESILO_DOMAIN:  ${{ env.NAMESILO_DOMAIN }}
       run: bash infra/update_namesilo.sh
+
+    # ───────────────── 7.  deploy code  ─────────────
+    - name: Rsync marketing → root
+      uses: appleboy/scp-action@v0.1.5
+      with:
+        host:       ${{ env.ROOT_IP }}
+        username:   root
+        key:        ${{ env.DROPLET_SSH_KEY }}
+        passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
+        source:     axialy-marketing-site/*
+        target:     /var/www/html/
+        strip_components: 1
+        timeout:    120s
+
+    - name: Rsync UI → ui
+      uses: appleboy/scp-action@v0.1.5
+      with:
+        host:       ${{ env.UI_IP }}
+        username:   root
+        key:        ${{ env.DROPLET_SSH_KEY }}
+        passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
+        source:     axialy-ui-product/*
+        target:     /var/www/html/
+        strip_components: 1
+        timeout:    120s
+
+    - name: Rsync Admin → admin
+      uses: appleboy/scp-action@v0.1.5
+      with:
+        host:       ${{ env.ADMIN_IP }}
+        username:   root
+        key:        ${{ env.DROPLET_SSH_KEY }}
+        passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
+        source:     axialy-admin-product/*
+        target:     /var/www/html/
+        strip_components: 1
+        timeout:    120s
+
+    - name: Rsync API → api
+      uses: appleboy/scp-action@v0.1.5
+      with:
+        host:       ${{ env.API_IP }}
+        username:   root
+        key:        ${{ env.DROPLET_SSH_KEY }}
+        passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
+        source:     axialy-api-product/*
+        target:     /var/www/html/
+        strip_components: 1
+        timeout:    120s
+
+    # ───────────────── 8.  write .env on Admin ─────
+    - name: Write .env for Admin
+      uses: appleboy/ssh-action@v0.1.6
+      with:
+        host:       ${{ env.ADMIN_IP }}
+        username:   root
+        key:        ${{ env.DROPLET_SSH_KEY }}
+        passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
+        envs:       DB_HOST,DB_PORT,DB_USER,DB_PASSWORD
+        script: |
+          cat >/var/www/html/.env <<EOF
+          DB_HOST=$DB_HOST
+          DB_PORT=$DB_PORT
+          DB_NAME=Axialy_Admin
+          DB_USER=$DB_USER
+          DB_PASSWORD=$DB_PASSWORD
+          EOF
+          chown www-data:www-data /var/www/html/.env
+          systemctl reload php8.1-fpm || true
