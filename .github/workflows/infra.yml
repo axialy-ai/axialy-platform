@@ -1,4 +1,3 @@
-# .github/workflows/infra.yml
 name: Terraform DigitalOcean
 
 on:
@@ -9,36 +8,34 @@ jobs:
   terraform:
     runs-on: ubuntu-latest
 
-    # ─────────────── Environment ───────────────
     env:
-      # DigitalOcean – ONE secret powers everything
-      DIGITALOCEAN_TOKEN:          ${{ secrets.TF_VAR_DO_TOKEN }}
-      TF_VAR_do_token:             ${{ secrets.TF_VAR_DO_TOKEN }}
-      # doctl also honours this env var automatically
-      DIGITALOCEAN_ACCESS_TOKEN:   ${{ secrets.TF_VAR_DO_TOKEN }}
+      # DigitalOcean – one secret drives everything
+      DIGITALOCEAN_TOKEN:        ${{ secrets.TF_VAR_DO_TOKEN }}
+      TF_VAR_do_token:           ${{ secrets.TF_VAR_DO_TOKEN }}
+      DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.TF_VAR_DO_TOKEN }}
 
       # NameSilo
-      NAMESILO_API_KEY:            ${{ secrets.NAMESILO_API_KEY }}
-      NAMESILO_DOMAIN:             axialy.ai
+      NAMESILO_API_KEY:          ${{ secrets.NAMESILO_API_KEY }}
+      NAMESILO_DOMAIN:           axialy.ai
 
       # SSH
-      DROPLET_SSH_KEY:             ${{ secrets.DROPLET_SSH_KEY }}
-      DROPLET_SSH_PASSPHRASE:      ${{ secrets.DROPLET_SSH_PASSPHRASE }}
-      TF_VAR_ssh_fingerprint:      ${{ secrets.SSH_FINGERPRINT }}
+      DROPLET_SSH_KEY:           ${{ secrets.DROPLET_SSH_KEY }}
+      DROPLET_SSH_PASSPHRASE:    ${{ secrets.DROPLET_SSH_PASSPHRASE }}
+      TF_VAR_ssh_fingerprint:    ${{ secrets.SSH_FINGERPRINT }}
 
     steps:
-    # 1 ───────── Checkout ────────────────────────────────────────────────
-    - uses: actions/checkout@v4
-      name: Checkout repository
+    # 1 – checkout
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
-    # 2 ───────── Remove stale TF artefacts ───────────────────────────────
+    # 2 – clean stale TF artefacts (cancelled jobs etc.)
     - name: Remove stale Terraform artefacts
       run: |
         rm -f infra/terraform.tfstate*
         rm -f infra/.terraform.lock.hcl
         rm -rf infra/.terraform
 
-    # 3 ───────── Detect changed product folders (optional speed-up) ──────
+    # 3 – optional: detect changed product folders (speeds up later)
     - id: filter
       name: Detect content changes
       uses: dorny/paths-filter@v3
@@ -51,27 +48,25 @@ jobs:
           admin:     [ 'axialy-admin-product/**'  ]
           api:       [ 'axialy-api-product/**'    ]
 
-    # 4 ───────── Install latest doctl (token already in env) ─────────────
+    # 4 – install latest doctl (token already in env)
     - name: Install doctl
       shell: bash
       run: |
         set -euo pipefail
         command -v jq >/dev/null 2>&1 || { sudo apt-get update -y && sudo apt-get install -y jq; }
-        VER=$(curl -sSf https://api.github.com/repos/digitalocean/doctl/releases/latest \
-                | jq -r '.tag_name' | sed 's/^v//')
-        curl -sSLf -o /tmp/doctl.tgz \
-             "https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz"
+        VER=$(curl -sSf https://api.github.com/repos/digitalocean/doctl/releases/latest | jq -r '.tag_name' | sed 's/^v//')
+        curl -sSLf -o /tmp/doctl.tgz "https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz"
         tar -xzf /tmp/doctl.tgz -C /tmp
         sudo install -m 755 /tmp/doctl /usr/local/bin
-        echo "doctl $(doctl version) installed (token supplied via env)."
+        echo "Installed $(doctl version)"
 
-    # 5 ───────── Install Terraform CLI ───────────────────────────────────
-    - uses: hashicorp/setup-terraform@v3
-      name: Set up Terraform CLI
+    # 5 – Terraform CLI (**patched 1.8.x**, fixes the schema bug)
+    - name: Set up Terraform CLI
+      uses: hashicorp/setup-terraform@v3
       with:
-        terraform_version: 1.8.2
+        terraform_version: "~> 1.8"
 
-    # 6 ───────── Terraform init / plan / apply ───────────────────────────
+    # 6 – init / import / plan / apply
     - name: Terraform init
       run: terraform -chdir=infra init
 
@@ -91,7 +86,7 @@ jobs:
       if: github.ref == 'refs/heads/main'
       run: terraform -chdir=infra apply -auto-approve -input=false
 
-    # 7 ───────── Capture droplet IPs ──────────────────────────────────────
+    # 7 – capture droplet IPs
     - id: ips
       name: Capture droplet IPs
       run: |
@@ -101,26 +96,18 @@ jobs:
         echo "API_IP=$(   echo "$IPS" | jq -r '.api')"   >> "$GITHUB_ENV"
         echo "ADMIN_IP=$( echo "$IPS" | jq -r '.admin')" >> "$GITHUB_ENV"
 
-    # 8 ───────── Wait for SSH on every droplet ───────────────────────────
+    # 8 – wait until SSH answers
     - name: Wait for SSH on droplets
       shell: bash
       run: |
         wait_ssh () {
-          local host=$1
-          echo "Waiting for SSH on ${host} ..."
-          for i in {1..30}; do
-            nc -z -w3 "$host" 22 && { echo "${host} ready"; return; }
-            sleep 5
-          done
-          echo "::error::SSH never became ready on ${host}"
-          exit 1
+          local h=$1; echo "Waiting for SSH on $h …"
+          for i in {1..30}; do nc -z -w3 "$h" 22 && { echo "$h ready"; return; }; sleep 5; done
+          echo "::error::SSH never became ready on $h"; exit 1
         }
-        wait_ssh "$ROOT_IP"
-        wait_ssh "$UI_IP"
-        wait_ssh "$ADMIN_IP"
-        wait_ssh "$API_IP"
+        wait_ssh "$ROOT_IP"; wait_ssh "$UI_IP"; wait_ssh "$ADMIN_IP"; wait_ssh "$API_IP"
 
-    # 9 ───────── Update NameSilo DNS ──────────────────────────────────────
+    # 9 – update NameSilo DNS
     - name: Update NameSilo DNS
       if: github.ref == 'refs/heads/main'
       env:
@@ -128,8 +115,8 @@ jobs:
         NAMESILO_DOMAIN:  ${{ env.NAMESILO_DOMAIN }}
       run: bash infra/update_namesilo.sh
 
-    # 10 ──────── Deploy artefacts via SCP ─────────────────────────────────
-    - name: Deploy marketing site to root droplet
+    # 10 – deploy artefacts to droplets (scp)
+    - name: Deploy marketing site
       uses: appleboy/scp-action@v0.1.5
       with:
         host:       ${{ env.ROOT_IP }}
@@ -141,7 +128,7 @@ jobs:
         strip_components: 1
         timeout:    120s
 
-    - name: Deploy UI product to ui droplet
+    - name: Deploy UI product
       uses: appleboy/scp-action@v0.1.5
       with:
         host:       ${{ env.UI_IP }}
@@ -153,7 +140,7 @@ jobs:
         strip_components: 1
         timeout:    120s
 
-    - name: Deploy Admin product to admin droplet
+    - name: Deploy Admin product
       uses: appleboy/scp-action@v0.1.5
       with:
         host:       ${{ env.ADMIN_IP }}
@@ -165,7 +152,7 @@ jobs:
         strip_components: 1
         timeout:    120s
 
-    - name: Deploy API product to api droplet
+    - name: Deploy API product
       uses: appleboy/scp-action@v0.1.5
       with:
         host:       ${{ env.API_IP }}
