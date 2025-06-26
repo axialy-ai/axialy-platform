@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
+# Sync already-existing DO resources into the TF state file (idempotent).
 set -eo pipefail
-state_has () { [ -f terraform.tfstate ] && terraform state list | grep -q "^$1$"; }
 cd "$(dirname "$0")"
 
+state_has () { [ -f terraform.tfstate ] && terraform state list | grep -q "^$1$"; }
+
 PID=$(doctl projects list --format ID,Name --no-header | awk '$2=="Axialy"{print $1; exit}')
-if [ -n "$PID" ] && ! state_has digitalocean_project.axialy ; then
+if [[ -n "$PID" ]] && ! state_has digitalocean_project.axialy ; then
   terraform import digitalocean_project.axialy "$PID"
 fi
 
-CID=$(doctl databases list --format ID,Name --no-header | awk '$2=="axialy-db-cluster"{print $1; exit}')
-if [ -n "$CID" ]; then
+CID=$(doctl databases list --format ID,Name --no-header | awk '$2=="axialy-mysql"{print $1; exit}')
+if [[ -n "$CID" ]]; then
   state_has digitalocean_database_cluster.mysql || \
     terraform import digitalocean_database_cluster.mysql "$CID"
 
@@ -23,11 +25,12 @@ if [ -n "$CID" ]; then
   done
 fi
 
-declare -A DROPS=( ["ui"]="ui.axialy.ai" ["api"]="api.axialy.ai" ["admin"]="admin.axialy.ai" ["root"]="axialy.ai" )
-for RES in "${!DROPS[@]}"; do
-  NAME="${DROPS[$RES]}"
+declare -A HOSTS=( ["root"]="axialy.ai" ["ui"]="ui.axialy.ai" \
+                   ["api"]="api.axialy.ai" ["admin"]="admin.axialy.ai" )
+for RES in "${!HOSTS[@]}"; do
+  NAME="${HOSTS[$RES]}"
   DID=$(doctl compute droplet list --format ID,Name --no-header | awk -v n="$NAME" '$2==n{print $1; exit}')
-  if [ -n "$DID" ] && ! state_has "digitalocean_droplet.${RES}" ; then
-    terraform import "digitalocean_droplet.${RES}" "$DID"
+  if [[ -n "$DID" ]] && ! state_has "digitalocean_droplet.sites[\"${RES}\"]" ; then
+    terraform import "digitalocean_droplet.sites[\"${RES}\"]" "$DID"
   fi
 done
