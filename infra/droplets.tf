@@ -1,68 +1,45 @@
-############################################
-#  Axialy – single authoritative droplet   #
-#           definition set                #
-############################################
-# Replaces every standalone droplet        #
-# resource that existed before.            #
-############################################
-
-terraform {
-  required_version = ">= 1.4"
-  required_providers {
-    digitalocean = {
-      source  = "digitalocean/digitalocean"
-      version = "~> 2.53"
-    }
-  }
-}
-
-# ────────── VARIABLES ──────────
-variable "region" {
-  description = "DigitalOcean region for all Axialy droplets"
-  type        = string
-  default     = "sfo3"
-}
-
-variable "ssh_fingerprint" {
-  description = "Fingerprint of the already-uploaded SSH key"
-  type        = string
-}
-
-variable "droplet_names" {
-  description = "Canonical list of Axialy droplets"
-  type        = list(string)
-  default     = ["root", "ui", "api", "admin"]
-}
+###############################################################################
+#  Authoritative, per-environment droplet set
+#  – 4 hosts total:  root / ui / api / admin
+#  – admin gets DB-aware cloud-init; all others share the static-site build
+###############################################################################
 
 locals {
-  image         = "ubuntu-22-04-x64"
-  cloudinit_dir = "${path.module}/cloudinit"
+  droplet_names = ["root", "ui", "api", "admin"]
+  image         = var.droplet_image          # defined in variables.tf
 }
 
-# ────────── DROPLET RESOURCE ──────────
+# ------------- DROPLETS ------------------------------------------------------
 resource "digitalocean_droplet" "sites" {
-  for_each = toset(var.droplet_names)
+  for_each = toset(local.droplet_names)
 
-  name              = "${each.key}.axialy.ai"
-  region            = var.region
-  size              = "s-1vcpu-1gb"
-  image             = local.image
-  ssh_keys          = [var.ssh_fingerprint]
+  # apex domain for “root”, sub-domains for the rest
+  name   = each.key == "root" ? var.domain : "${each.key}.${var.domain}"
+  region = var.region
+  size   = var.droplet_size
+  image  = local.image
+  ssh_keys = [var.ssh_fingerprint]
 
   ipv6              = false
   monitoring        = false
   backups           = false
   graceful_shutdown = true
 
-  # optional cloud-init per droplet
-  user_data = fileexists("${local.cloudinit_dir}/${each.key}.yml")
-              ? file("${local.cloudinit_dir}/${each.key}.yml")
-              : null
+  # ─── cloud-init ────────────────────────────────────────────────────────────
+  user_data = each.key == "admin"
+    ? templatefile("${path.module}/cloud-init/admin.tpl", {
+        db_host = digitalocean_database_cluster.mysql.host
+        db_port = digitalocean_database_cluster.mysql.port
+        db_name = digitalocean_database_db.admin.name
+        db_user = digitalocean_database_user.admin_app.name
+        db_pass = digitalocean_database_user.admin_app.password
+      })
+    : local.static_site_user_data    # defined in template_static_site.tf
 
   tags = ["axialy", each.key]
 }
 
-# ────────── ATTACH TO PROJECT ──────────
+# ------------- ATTACH ALL RESOURCES TO THE PROJECT --------------------------
 resource "digitalocean_project_resources" "attach" {
   project   = digitalocean_project.axialy.id
   resources = [for d in digitalocean_droplet.sites : d.urn]
