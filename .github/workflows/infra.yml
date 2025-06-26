@@ -52,19 +52,23 @@ jobs:
             ui:        [ 'axialy-ui-product/**'     ]
             admin:     [ 'axialy-admin-product/**'  ]
             api:       [ 'axialy-api-product/**'    ]
-
-      # 4 — install doctl
-      - name: Install doctl
-        run: |
-          set -e
-          VER=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest |
-                 grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
-          curl -sL "https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz" |
-            tar -xz
-          sudo mv doctl /usr/local/bin
-
-      - name: doctl auth
-        run: doctl auth init -t "$DIGITALOCEAN_TOKEN"
+    
+    #4 ─────────────── Install latest doctl ───────────────
+    - name: Install doctl
+      run: |
+        set -euo pipefail                     # fail on any error (incl. pipes)
+    
+        # fetch latest tag (no trailing newline)
+        VER=$(curl -sSf https://api.github.com/repos/digitalocean/doctl/releases/latest \
+                | jq -r '.tag_name' | sed 's/^v//')
+    
+        # download the tarball (-f = fail if 4xx/5xx)
+        curl -sSLf -o /tmp/doctl.tgz \
+             "https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz"
+    
+        # unpack and install
+        tar -xzf /tmp/doctl.tgz -C /tmp
+        sudo install -m 755 /tmp/doctl /usr/local/bin
 
       # 5 — install Terraform CLI
       - name: Set up Terraform CLI
