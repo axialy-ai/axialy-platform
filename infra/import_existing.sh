@@ -1,36 +1,46 @@
 #!/usr/bin/env bash
-# Sync already-existing DO resources into the TF state file (idempotent).
-set -eo pipefail
-cd "$(dirname "$0")"
+# ---------------------------------------------------------------------------
+#  infra/import_existing.sh
+#
+#  One-off helper to pull **real, pre-existing resources** into Terraform
+#  state.  **Only resources belong here – never data sources.**
+#
+#  Run automatically by the CI workflow, but it’s safe to execute locally
+#  too.  Idempotent: if a resource is already in state, Terraform just skips
+#  it.
+# ---------------------------------------------------------------------------
 
-state_has () { [ -f terraform.tfstate ] && terraform state list | grep -q "^$1$"; }
+set -euo pipefail
 
-PID=$(doctl projects list --format ID,Name --no-header | awk '$2=="Axialy"{print $1; exit}')
-if [[ -n "$PID" ]] && ! state_has digitalocean_project.axialy ; then
-  terraform import digitalocean_project.axialy "$PID"
-fi
+# Always run Terraform from the infra/ directory no matter where the script
+# is launched.
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+TF="terraform -chdir=${SCRIPT_DIR}"
 
-CID=$(doctl databases list --format ID,Name --no-header | awk '$2=="axialy-mysql"{print $1; exit}')
-if [[ -n "$CID" ]]; then
-  state_has digitalocean_database_cluster.mysql || \
-    terraform import digitalocean_database_cluster.mysql "$CID"
+# ────────────────────────────────────────────────────────────────────────────
+#  DigitalOcean project
+# ────────────────────────────────────────────────────────────────────────────
+# Replace the ID below with **your** project UUID once and commit it; after
+# that the import becomes a no-op.
+${TF} import \
+  digitalocean_project.axialy \
+  d895904a-4fbb-4492-8038-02071ab8f75b
 
-  declare -A DBS=( ["ui"]="Axialy_UI" ["admin"]="Axialy_Admin" )
-  for RES in "${!DBS[@]}"; do
-    DB="${DBS[$RES]}"
-    if doctl databases db list "$CID" --format Name --no-header | grep -qw "$DB" \
-       && ! state_has "digitalocean_database_db.${RES}" ; then
-      terraform import "digitalocean_database_db.${RES}" "${CID},${DB}"
-    fi
-  done
-fi
+# ────────────────────────────────────────────────────────────────────────────
+#  Firewalls – these are *resources*, not the `data.digitalocean_firewalls`
+#  lookup that blew up the last run.  Uncomment / edit the examples as
+#  required, or delete the section entirely if you manage firewalls some
+#  other way.
+# ────────────────────────────────────────────────────────────────────────────
+# ${TF} import digitalocean_firewall.web   f1d2d2f924e986ac86fdf7b36c94bcdf32beec15
+# ${TF} import digitalocean_firewall.db    7c222fb2927d828af22f592134e8932480637c0d
 
-declare -A HOSTS=( ["root"]="axialy.ai" ["ui"]="ui.axialy.ai" \
-                   ["api"]="api.axialy.ai" ["admin"]="admin.axialy.ai" )
-for RES in "${!HOSTS[@]}"; do
-  NAME="${HOSTS[$RES]}"
-  DID=$(doctl compute droplet list --format ID,Name --no-header | awk -v n="$NAME" '$2==n{print $1; exit}')
-  if [[ -n "$DID" ]] && ! state_has "digitalocean_droplet.sites[\"${RES}\"]" ; then
-    terraform import "digitalocean_droplet.sites[\"${RES}\"]" "$DID"
-  fi
-done
+# ────────────────────────────────────────────────────────────────────────────
+#  Droplets – same idea; comment-in only the ones that really exist.
+# ────────────────────────────────────────────────────────────────────────────
+# ${TF} import digitalocean_droplet.ui     123456789
+# ${TF} import digitalocean_droplet.api    987654321
+# ${TF} import digitalocean_droplet.admin  1122334455
+# ${TF} import digitalocean_droplet.root   5566778899
+
+echo "✅  All resource imports completed successfully."
