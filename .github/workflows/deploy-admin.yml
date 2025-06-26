@@ -3,43 +3,46 @@ name: Deploy ADMIN Product
 on:
   push:
     branches: [ "main" ]
-    paths:
-      - "axialy-admin-product/**"
+    paths: [ "axialy-admin-product/**", ".github/workflows/deploy-admin.yml" ]
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    env:
+
+    env:                      # ── repo secrets you ALREADY have ─────────────
       DIGITALOCEAN_TOKEN:      ${{ secrets.DIGITALOCEAN_TOKEN }}
       DROPLET_SSH_KEY:         ${{ secrets.DROPLET_SSH_KEY }}
       DROPLET_SSH_PASSPHRASE:  ${{ secrets.DROPLET_SSH_PASSPHRASE }}
 
+      ADMIN_DEFAULT_USER:      ${{ secrets.ADMIN_DEFAULT_USER }}
+      ADMIN_DEFAULT_EMAIL:     ${{ secrets.ADMIN_DEFAULT_EMAIL }}
+      ADMIN_DEFAULT_PASSWORD:  ${{ secrets.ADMIN_DEFAULT_PASSWORD }}
+
     steps:
-    # ──────────── 1 ─ Checkout ────────────
+    # ────────────────────────── 1.  checkout  ───────────────────────────────
     - uses: actions/checkout@v4
 
-    # ──────────── 2 ─ doctl ────────────
+    # ────────────────────────── 2.  doctl + auth  ───────────────────────────
     - name: Install & auth doctl
       run: |
         ver=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest \
-                | grep '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/')
+                 | grep '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/')
         curl -sL "https://github.com/digitalocean/doctl/releases/download/v${ver}/doctl-${ver}-linux-amd64.tar.gz" \
-          | tar -xz
-        sudo mv doctl /usr/local/bin
+          | tar -xz && sudo mv doctl /usr/local/bin
         doctl auth init -t "$DIGITALOCEAN_TOKEN"
 
-    # ──────────── 3 ─ Find droplet ────────
+    # ────────────────────────── 3.  admin droplet IP  ───────────────────────
     - id: ip
       name: Look up ADMIN droplet IP
       run: |
         ip=$(doctl compute droplet list --format Name,PublicIPv4 --no-header \
                | awk '$1=="admin.axialy.ai"{print $2; exit}')
-        if [ -z "$ip" ]; then
+        if [[ -z "$ip" ]]; then
           echo "::error::Could not find droplet named admin.axialy.ai"; exit 1
         fi
         echo "ip=$ip" >> "$GITHUB_OUTPUT"
 
-    # ──────────── 4 ─ Wait for SSH ────────
+    # ────────────────────────── 4.  wait for SSH  ───────────────────────────
     - name: Wait for SSH
       run: |
         for i in {1..30}; do
@@ -48,8 +51,30 @@ jobs:
         done
         echo "::error::SSH never became ready"; exit 1
 
-    # ──────────── 5 ─ Ensure NGINX + PHP ─
-    - name: Install & configure NGINX + PHP-FPM
+    # ────────────────────────── 5.  fetch DB creds from cluster ─────────────
+    - id: db
+      name: Fetch Admin DB connection details
+      run: |
+        CID=$(doctl databases list --format ID,Name --no-header \
+               | awk '$2=="axialy-db-cluster"{print $1; exit}')
+        uri=$(doctl databases connection "$CID" --format URI --no-header)
+        host=$(echo "$uri" | sed -E 's|mysql://[^:]+:[^@]+@([^:]+):([0-9]+)/.*|\1|')
+        port=$(echo "$uri" | sed -E 's|mysql://[^:]+:[^@]+@[^:]+:([0-9]+)/.*|\1|')
+        user=$(echo "$uri" | sed -E 's|mysql://([^:]+):[^@]+@.*|\1|')
+        pass=$(echo "$uri" | sed -E 's|mysql://[^:]+:([^@]+)@.*|\1|')
+
+        echo "::add-mask::$pass"
+
+        {
+          echo "DB_HOST=$host"
+          echo "DB_PORT=$port"
+          echo "DB_USER=$user"
+          echo "DB_PASSWORD=$pass"
+          echo "DB_NAME=Axialy_Admin"
+        } >> "$GITHUB_ENV"
+
+    # ────────────────────────── 6.  install nginx + php  ────────────────────
+    - name: Ensure NGINX + PHP-FPM
       uses: appleboy/ssh-action@v0.1.6
       with:
         host:       ${{ steps.ip.outputs.ip }}
@@ -59,49 +84,51 @@ jobs:
         script: |
           set -e
           export DEBIAN_FRONTEND=noninteractive
-          # install nginx + php if missing
-          if ! command -v nginx >/dev/null 2>&1; then
-            apt-get update -y
-            apt-get install -y nginx php-fpm php-mysql
-          fi
-
-          # grab php-fpm socket path (first match)
+          apt-get update -y
+          apt-get install -y nginx php-fpm php-mysql
+          # grab php-fpm socket (first match)
           PHP_SOCK=$(ls /run/php/php*-fpm.sock | head -n1)
-
-          # configure default virtual host
+          # minimal vhost
           cat >/etc/nginx/sites-available/default <<EOF
           server {
               listen 80 default_server;
               listen [::]:80 default_server;
-
-              root /var/www/html;
-              index index.php index.html index.htm;
-
               server_name admin.axialy.ai _;
-
-              location / {
-                  try_files \$uri \$uri/ /index.php?\$args;
-              }
-
-              location ~ \.php$ {
+              root /var/www/html;
+              index index.php index.html;
+              location / { try_files \$uri \$uri/ /index.php?\$args; }
+              location ~ \.php\$ {
                   include snippets/fastcgi-php.conf;
                   fastcgi_pass unix:${PHP_SOCK};
               }
-
-              location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg)$ {
-                  try_files \$uri =404;
-                  expires max;
-                  log_not_found off;
-              }
           }
           EOF
+          systemctl enable --now nginx php*-fpm
 
-          # enable & restart services
-          systemctl enable --now nginx
-          systemctl restart  nginx
-          systemctl restart  php*-fpm
+    # ────────────────────────── 7.  inject env into PHP-FPM  ────────────────
+    - name: Inject environment variables into PHP-FPM
+      uses: appleboy/ssh-action@v0.1.6
+      with:
+        host:       ${{ steps.ip.outputs.ip }}
+        username:   root
+        key:        ${{ env.DROPLET_SSH_KEY }}
+        passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
+        envs:       DB_HOST,DB_PORT,DB_NAME,DB_USER,DB_PASSWORD,ADMIN_DEFAULT_USER,ADMIN_DEFAULT_EMAIL,ADMIN_DEFAULT_PASSWORD
+        script: |
+          POOL_DIR=$(echo /etc/php/*/fpm/pool.d)
+          cat >"${POOL_DIR}/10-axialy-env.conf" <<CONF
+          env[DB_HOST]                = "${DB_HOST}"
+          env[DB_PORT]                = "${DB_PORT}"
+          env[DB_NAME]                = "${DB_NAME}"
+          env[DB_USER]                = "${DB_USER}"
+          env[DB_PASSWORD]            = "${DB_PASSWORD}"
+          env[ADMIN_DEFAULT_USER]     = "${ADMIN_DEFAULT_USER}"
+          env[ADMIN_DEFAULT_EMAIL]    = "${ADMIN_DEFAULT_EMAIL}"
+          env[ADMIN_DEFAULT_PASSWORD] = "${ADMIN_DEFAULT_PASSWORD}"
+          CONF
+          systemctl restart php*-fpm
 
-    # ──────────── 6 ─ Rsync build ─────────
+    # ────────────────────────── 8.  rsync code  ─────────────────────────────
     - name: Rsync new build
       uses: appleboy/scp-action@v0.1.5
       with:
