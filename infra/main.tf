@@ -7,7 +7,7 @@
 #########################
 
 locals {
-  # cloud-init that the three front-end droplets (root, ui, api) share
+  # cloud-init shared by the front-end droplets (root, ui, api)
   cloud_init = <<-EOF
     #cloud-config
     package_update: true
@@ -46,10 +46,7 @@ resource "digitalocean_droplet" "root" {
   tags       = concat(local.common_tags, ["www"])
   user_data  = local.cloud_init
 
-  # Never rebuild this droplet just because user_data differs
-  lifecycle {
-    ignore_changes = [user_data]
-  }
+  lifecycle { ignore_changes = [user_data] }
 }
 
 # ── UI ───────────────────────────────────────────────────────────────────────
@@ -62,12 +59,10 @@ resource "digitalocean_droplet" "ui" {
   tags       = concat(local.common_tags, ["ui"])
   user_data  = local.cloud_init
 
-  lifecycle {
-    ignore_changes = [user_data]
-  }
+  lifecycle { ignore_changes = [user_data] }
 }
 
-# (Admin droplet lives in infra/admin-droplet.tf)
+# (The Admin droplet is defined in infra/admin-droplet.tf)
 
 # ── API ──────────────────────────────────────────────────────────────────────
 resource "digitalocean_droplet" "api" {
@@ -79,9 +74,7 @@ resource "digitalocean_droplet" "api" {
   tags       = concat(local.common_tags, ["api"])
   user_data  = local.cloud_init
 
-  lifecycle {
-    ignore_changes = [user_data]
-  }
+  lifecycle { ignore_changes = [user_data] }
 }
 
 #########################
@@ -117,7 +110,7 @@ resource "digitalocean_project_resources" "attach" {
   resources = [
     digitalocean_droplet.root.urn,
     digitalocean_droplet.ui.urn,
-    digitalocean_droplet.admin.urn,   # defined in admin-droplet.tf
+    digitalocean_droplet.admin.urn,  # comes from admin-droplet.tf
     digitalocean_droplet.api.urn,
     digitalocean_database_cluster.mysql.urn
   ]
