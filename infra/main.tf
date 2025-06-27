@@ -46,8 +46,8 @@ resource "digitalocean_droplet" "root" {
   tags       = concat(local.common_tags, ["www"])
   user_data  = local.cloud_init
 
-  # Never rebuild this droplet just because user_data differs
   lifecycle {
+    # Never rebuild this droplet just because user_data differs
     ignore_changes = [user_data]
   }
 }
@@ -67,7 +67,21 @@ resource "digitalocean_droplet" "ui" {
   }
 }
 
-# ── ADMIN  ❱❱  custom cloud-init  ❰❰─────────────────────────────────────────
+# ── ADMIN – custom cloud-init (renders db creds) ─────────────────────────────
+
+# 1) Render the cloud-init template with DB connection variables
+data "template_file" "admin_cloud_init" {
+  template = file("${path.module}/cloud-init/admin.tpl")
+
+  vars = {
+    db_host = digitalocean_database_cluster.mysql.host
+    db_user = digitalocean_database_cluster.mysql.user
+    db_pass = digitalocean_database_cluster.mysql.password
+    db_name = digitalocean_database_db.admin.name
+  }
+}
+
+# 2) Create the droplet, injecting the rendered cloud-init
 resource "digitalocean_droplet" "admin" {
   name       = "admin.${var.domain}"
   region     = var.region
@@ -76,8 +90,12 @@ resource "digitalocean_droplet" "admin" {
   ssh_keys   = [var.ssh_fingerprint]
   tags       = concat(local.common_tags, ["admin"])
 
-  # points at the script you added earlier
-  user_data  = file("${path.module}/cloud-init/admin.tpl")
+  user_data  = data.template_file.admin_cloud_init.rendered
+
+  lifecycle {
+    # Leave the droplet intact when user_data changes (e.g. DB password rotates)
+    ignore_changes = [user_data]
+  }
 }
 
 # ── API ──────────────────────────────────────────────────────────────────────
