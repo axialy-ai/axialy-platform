@@ -1,4 +1,4 @@
-# .github/workflows/deploy.yml
+# .github/workflows/infra.yml   ← REPLACE THE WHOLE FILE WITH THIS
 name: Deploy Axialy
 
 on:
@@ -22,7 +22,7 @@ jobs:
         shell: bash -Eeuo pipefail {0}
 
     steps:
-    # ────────────────────────── Source & tooling ──────────────────────────
+    #────────────────────────── Source & tooling ──────────────────────────#
     - name: Checkout repo
       uses: actions/checkout@v4
 
@@ -36,14 +36,14 @@ jobs:
       run: |
         VER=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest \
                | jq -r '.tag_name' | sed 's/^v//')
-        curl -sL "https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz" \
-          | tar -xz
+        curl -sL "https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz" |
+          tar -xz
         sudo mv doctl /usr/local/bin
 
     - name: Authenticate doctl
       run: doctl auth init -t "$DIGITALOCEAN_TOKEN"
 
-    # ────────────────────────── Terraform apply ───────────────────────────
+    #────────────────────────── Terraform apply ───────────────────────────#
     - name: Terraform init
       run: terraform -chdir=infra init
 
@@ -53,7 +53,7 @@ jobs:
     - name: Terraform apply
       run: terraform -chdir=infra apply -auto-approve -input=false
 
-    # ─────────────────────── Capture public IPs reliably ───────────────────
+    #────────────────────── Capture public IPs reliably ───────────────────#
     - name: Capture droplet public IPs
       id: capture_ips
       run: |
@@ -61,10 +61,7 @@ jobs:
           local key=$1
           for i in {1..20}; do
             ip=$(terraform -chdir=infra output -json droplet_ips | jq -r --arg k "$key" '.[$k]')
-            if [[ -n "$ip" && "$ip" != "null" ]]; then
-              echo "$ip"
-              return
-            fi
+            [[ -n "$ip" && "$ip" != "null" ]] && { echo "$ip"; return; }
             sleep 10
           done
           echo "::error::Failed to fetch IP for $key after 200 s" >&2
@@ -76,7 +73,7 @@ jobs:
         echo "ADMIN_IP=$(get_ip admin)" >>"$GITHUB_ENV"
         echo "API_IP=$(get_ip api)"     >>"$GITHUB_ENV"
 
-    # ───────────────────────── Wait until SSH is up ────────────────────────
+    #───────────────────────── Wait until SSH is up ────────────────────────#
     - name: Wait for SSH on all droplets
       run: |
         wait_ssh () {
@@ -95,8 +92,10 @@ jobs:
         wait_ssh "$ADMIN_IP"
         wait_ssh "$API_IP"
 
-    # ────────────────────────── File transfer (SCP) ────────────────────────
+    #────────────────────────── File transfer (SCP) ────────────────────────#
+    # If the folder is empty, skip the step so drone-scp never sees an empty tar.
     - name: Copy files to ROOT droplet
+      if: ${{ hashFiles('deploy/root/**') != '' }}
       uses: appleboy/scp-action@v0.1.5
       with:
         host:        ${{ env.ROOT_IP }}
@@ -107,6 +106,7 @@ jobs:
         target:      /root/axialy
 
     - name: Copy files to UI droplet
+      if: ${{ hashFiles('deploy/ui/**') != '' }}
       uses: appleboy/scp-action@v0.1.5
       with:
         host:        ${{ env.UI_IP }}
@@ -117,6 +117,7 @@ jobs:
         target:      /root/axialy
 
     - name: Copy files to ADMIN droplet
+      if: ${{ hashFiles('deploy/admin/**') != '' }}
       uses: appleboy/scp-action@v0.1.5
       with:
         host:        ${{ env.ADMIN_IP }}
@@ -127,6 +128,7 @@ jobs:
         target:      /root/axialy
 
     - name: Copy files to API droplet
+      if: ${{ hashFiles('deploy/api/**') != '' }}
       uses: appleboy/scp-action@v0.1.5
       with:
         host:        ${{ env.API_IP }}
@@ -136,7 +138,7 @@ jobs:
         source:      deploy/api/
         target:      /root/axialy
 
-    # ─────────────────────────── Remote deploy (SSH) ───────────────────────
+    #────────────────────────── Remote deploy (SSH) ───────────────────────#
     - name: Deploy ROOT droplet
       uses: appleboy/ssh-action@v0.1.6
       with:
@@ -146,8 +148,7 @@ jobs:
         passphrase:  ${{ env.DROPLET_SSH_PASSPHRASE }}
         script: |
           cd /root/axialy
-          chmod +x deploy.sh
-          ./deploy.sh
+          [[ -x deploy.sh ]] && ./deploy.sh || echo "nothing to run"
 
     - name: Deploy UI droplet
       uses: appleboy/ssh-action@v0.1.6
@@ -158,8 +159,7 @@ jobs:
         passphrase:  ${{ env.DROPLET_SSH_PASSPHRASE }}
         script: |
           cd /root/axialy
-          chmod +x deploy.sh
-          ./deploy.sh
+          [[ -x deploy.sh ]] && ./deploy.sh || echo "nothing to run"
 
     - name: Deploy ADMIN droplet
       uses: appleboy/ssh-action@v0.1.6
@@ -170,8 +170,7 @@ jobs:
         passphrase:  ${{ env.DROPLET_SSH_PASSPHRASE }}
         script: |
           cd /root/axialy
-          chmod +x deploy.sh
-          ./deploy.sh
+          [[ -x deploy.sh ]] && ./deploy.sh || echo "nothing to run"
 
     - name: Deploy API droplet
       uses: appleboy/ssh-action@v0.1.6
@@ -182,5 +181,4 @@ jobs:
         passphrase:  ${{ env.DROPLET_SSH_PASSPHRASE }}
         script: |
           cd /root/axialy
-          chmod +x deploy.sh
-          ./deploy.sh
+          [[ -x deploy.sh ]] && ./deploy.sh || echo "nothing to run"
