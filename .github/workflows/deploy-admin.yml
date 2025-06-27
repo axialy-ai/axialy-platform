@@ -1,3 +1,4 @@
+# .github/workflows/deploy-admin.yml
 name: Deploy ADMIN Product
 
 on:
@@ -15,10 +16,10 @@ jobs:
       DROPLET_SSH_PASSPHRASE:  ${{ secrets.DROPLET_SSH_PASSPHRASE }}
 
     steps:
-    # ──────────── 1 ─ Checkout ────────────
+    # ────────────────────────── 1 ─ Checkout ──────────────────────────
     - uses: actions/checkout@v4
 
-    # ──────────── 2 ─ doctl ────────────
+    # ────────────────────────── 2 ─ doctl ────────────────────────────
     - name: Install & auth doctl
       run: |
         ver=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest \
@@ -28,7 +29,24 @@ jobs:
         sudo mv doctl /usr/local/bin
         doctl auth init -t "$DIGITALOCEAN_TOKEN"
 
-    # ──────────── 3 ─ Find droplet ────────
+    # ──────────────────────── 3 ─ DB credentials ─────────────────────
+    - id: db
+      name: Fetch Admin-DB connection info
+      run: |
+        CID=$(doctl databases list --format ID,Name --no-header \
+                | awk '$2=="axialy-db-cluster"{print $1; exit}')
+        uri=$(doctl databases connection "$CID" --format URI --no-header)
+        host=$(echo "$uri" | sed -E 's|mysql://[^:]+:[^@]+@([^:]+):([0-9]+)/.*|\1|')
+        port=$(echo "$uri" | sed -E 's|mysql://[^:]+:[^@]+@([^:]+):([0-9]+)/.*|\2|')
+        user=$(echo "$uri" | sed -E 's|mysql://([^:]+):[^@]+@.*|\1|')
+        pass=$(echo "$uri" | sed -E 's|mysql://[^:]+:([^@]+)@.*|\1|')
+        echo "db_host=$host" >>"$GITHUB_OUTPUT"
+        echo "db_port=$port" >>"$GITHUB_OUTPUT"
+        echo "db_user=$user" >>"$GITHUB_OUTPUT"
+        echo "::add-mask::$pass"
+        echo "db_pass=$pass" >>"$GITHUB_OUTPUT"
+
+    # ──────────────────────── 4 ─ Find droplet ───────────────────────
     - id: ip
       name: Look up ADMIN droplet IP
       run: |
@@ -37,9 +55,9 @@ jobs:
         if [ -z "$ip" ]; then
           echo "::error::Could not find droplet named admin.axialy.ai"; exit 1
         fi
-        echo "ip=$ip" >> "$GITHUB_OUTPUT"
+        echo "ip=$ip" >>"$GITHUB_OUTPUT"
 
-    # ──────────── 4 ─ Wait for SSH ────────
+    # ──────────────────────── 5 ─ Wait for SSH ───────────────────────
     - name: Wait for SSH
       run: |
         for i in {1..30}; do
@@ -48,8 +66,8 @@ jobs:
         done
         echo "::error::SSH never became ready"; exit 1
 
-    # ──────────── 5 ─ Ensure NGINX + PHP ─
-    - name: Install & configure NGINX + PHP-FPM
+    # ─────── 6 ─ Ensure NGINX + PHP-FPM are present & configured ─────
+    - name: Install NGINX + PHP on droplet
       uses: appleboy/ssh-action@v0.1.6
       with:
         host:       ${{ steps.ip.outputs.ip }}
@@ -59,25 +77,19 @@ jobs:
         script: |
           set -e
           export DEBIAN_FRONTEND=noninteractive
-          # install nginx + php if missing
-          if ! command -v nginx >/dev/null 2>&1; then
-            apt-get update -y
-            apt-get install -y nginx php-fpm php-mysql
-          fi
+          apt-get update -y
+          apt-get install -y nginx php-fpm php-mysql
 
-          # grab php-fpm socket path (first match)
           PHP_SOCK=$(ls /run/php/php*-fpm.sock | head -n1)
 
-          # configure default virtual host
           cat >/etc/nginx/sites-available/default <<EOF
           server {
               listen 80 default_server;
               listen [::]:80 default_server;
+              server_name admin.axialy.ai _;
 
               root /var/www/html;
-              index index.php index.html index.htm;
-
-              server_name admin.axialy.ai _;
+              index index.php index.html;
 
               location / {
                   try_files \$uri \$uri/ /index.php?\$args;
@@ -96,13 +108,12 @@ jobs:
           }
           EOF
 
-          # enable & restart services
           systemctl enable --now nginx
-          systemctl restart  nginx
-          systemctl restart  php*-fpm
+          systemctl reload nginx
+          systemctl restart php*-fpm
 
-    # ──────────── 6 ─ Rsync build ─────────
-    - name: Rsync new build
+    # ───────────────────────── 7 ─ Rsync code ────────────────────────
+    - name: Rsync Admin build
       uses: appleboy/scp-action@v0.1.5
       with:
         host:       ${{ steps.ip.outputs.ip }}
@@ -113,3 +124,28 @@ jobs:
         target:     /var/www/html/
         strip_components: 1
         timeout:    120s
+
+    # ─────────────── 8 ─ Drop .env with runtime secrets ──────────────
+    - name: Write .env on droplet
+      uses: appleboy/ssh-action@v0.1.6
+      with:
+        host:       ${{ steps.ip.outputs.ip }}
+        username:   root
+        key:        ${{ env.DROPLET_SSH_KEY }}
+        passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
+        script: |
+          cat >/var/www/html/.env <<EOVARS
+          DB_HOST=${{ steps.db.outputs.db_host }}
+          DB_PORT=${{ steps.db.outputs.db_port }}
+          DB_NAME=Axialy_Admin
+          DB_USER=${{ steps.db.outputs.db_user }}
+          DB_PASSWORD=${{ steps.db.outputs.db_pass }}
+
+          ADMIN_DEFAULT_USER=${{ secrets.ADMIN_DEFAULT_USER }}
+          ADMIN_DEFAULT_EMAIL=${{ secrets.ADMIN_DEFAULT_EMAIL }}
+          ADMIN_DEFAULT_PASSWORD=${{ secrets.ADMIN_DEFAULT_PASSWORD }}
+          EOVARS
+          chown www-data:www-data /var/www/html/.env
+          chmod 640 /var/www/html/.env
+
+          systemctl restart php*-fpm
