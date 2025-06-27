@@ -1,50 +1,64 @@
 #cloud-config
 ###############################################################################
-#  Axialy – admin droplet bootstrap
+# Axialy – Admin droplet bootstrap
+# Rendered by Terraform’s template_file data source.
 ###############################################################################
 
+##
+## 1. Install all required packages
+##
 package_update: true
 package_upgrade: true
-
 packages:
-  # Web stack
   - nginx
-  - php8.1-fpm          # PHP FastCGI daemon
+  - php8.1-fpm
   - php8.1-cli
-  - php8.1-mysql        # PDO / MySQLi
-  # Convenience
+  - php8.1-mysql
+  - php8.1-curl
+  - php8.1-xml
+  - php8.1-mbstring
   - unzip
   - git
 
+##
+## 2. Write environment-specific configuration
+##    (DB creds are injected by Terraform template variables)
+##
 write_files:
-  ###########################################################################
-  #  Nginx vhost ( /etc/nginx/sites-available/default )
-  ###########################################################################
-  - path: /etc/nginx/sites-available/default
+  - path: /var/www/html/.env
+    owner: www-data:www-data
+    permissions: "0600"
+    content: |
+      DB_HOST=${db_host}
+      DB_DATABASE=${db_name}
+      DB_USERNAME=${db_user}
+      DB_PASSWORD=${db_pass}
+
+  # Nginx site definition – served from /var/www/html/public
+  - path: /etc/nginx/sites-available/admin.axialy.ai
     owner: root:root
     permissions: "0644"
     content: |
       server {
-          listen 80 default_server;
-          listen [::]:80 default_server;
+          listen 80;
+          listen [::]:80;
 
           server_name admin.axialy.ai _;
-
-          root /var/www/html;
+          root /var/www/html/public;
           index index.php index.html;
 
-          # Pretty URLs -----------------------------------------------------
+          # pretty URLs
           location / {
               try_files $uri $uri/ /index.php?$args;
           }
 
-          # PHP -------------------------------------------------------------
+          # PHP
           location ~ \.php$ {
               include snippets/fastcgi-php.conf;
               fastcgi_pass unix:/run/php/php8.1-fpm.sock;
           }
 
-          # Static assets – cache forever -----------------------------------
+          # Static assets – cache forever
           location ~* \.(?:js|css|png|jpe?g|gif|ico|svg)$ {
               try_files $uri =404;
               expires max;
@@ -52,7 +66,7 @@ write_files:
               log_not_found off;
           }
 
-          # Block hidden files (.env, .git …) -------------------------------
+          # Block hidden files (.env, .git, …)
           location ~ /\.(?!well-known).* {
               deny all;
           }
@@ -61,8 +75,31 @@ write_files:
           error_log   /var/log/nginx/error.log warn;
       }
 
+  # Ensure PHP-FPM runs as www-data (matches Nginx user)
+  - path: /etc/php/8.1/fpm/pool.d/www.conf
+    append: true    # only adds the extra two lines
+    content: |
+      pm = dynamic
+      user = www-data
+      group = www-data
+
+##
+## 3. Enable our Nginx site & disable the default
+##
 runcmd:
-  # Ensure PHP-FPM is enabled + running (creates /run/php/php8.1-fpm.sock)
-  - systemctl enable --now php8.1-fpm
-  # Reload nginx after the vhost + socket exist
-  - systemctl reload nginx
+  - [ bash, -c, "ln -sf /etc/nginx/sites-available/admin.axialy.ai /etc/nginx/sites-enabled/admin.axialy.ai" ]
+  - [ bash, -c, "rm -f /etc/nginx/sites-enabled/default" ]
+
+##
+## 4. Ensure correct permissions for the web root
+##
+  - [ bash, -c, "mkdir -p /var/www/html/public" ]
+  - [ bash, -c, "chown -R www-data:www-data /var/www/html" ]
+
+##
+## 5. Start / reload services
+##
+  - [ systemctl, enable, --now, php8.1-fpm ]
+  - [ systemctl, restart, php8.1-fpm ]
+  - [ systemctl, enable, --now, nginx ]
+  - [ systemctl, reload, nginx ]
