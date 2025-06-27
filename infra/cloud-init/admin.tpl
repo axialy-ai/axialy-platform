@@ -1,8 +1,6 @@
 #!/bin/bash
 # infra/cloud-init/admin.tpl  – FULL FILE
-# cloud-init script for the admin droplet (admin.axialy.ai)
-# The placeholders ${db_host} etc. are substituted by Terraform’s
-# template_file data source before the droplet is created.
+# cloud-init script for admin.axialy.ai
 
 set -eux
 
@@ -25,17 +23,15 @@ rm -f /var/www/html/index.nginx-debian.html || true
 chown -R www-data:www-data /var/www/html
 
 ###############################################################################
-# 3 ) Inject DB credentials for PHP-FPM   (env[] whitelist is mandatory)
+# 3 ) Expose DB credentials to PHP-FPM and the app
 ###############################################################################
 cat >/etc/php/8.1/fpm/pool.d/99-axialy-admin-env.conf <<EOF
-; added by cloud-init
 env[DB_HOST] = ${db_host}
 env[DB_USER] = ${db_user}
 env[DB_PASS] = ${db_pass}
 env[DB_NAME] = ${db_name}
 EOF
 
-# Optional: also drop a .env file for CLI-use / fallbacks
 cat >/var/www/html/.env <<EOF
 DB_HOST=${db_host}
 DB_USER=${db_user}
@@ -46,7 +42,7 @@ chown www-data:www-data /var/www/html/.env
 chmod 600 /var/www/html/.env
 
 ###############################################################################
-# 4 ) Nginx virtual-host
+# 4 ) Nginx virtual host
 ###############################################################################
 cat >/etc/nginx/sites-available/default <<'CONF'
 server {
@@ -78,5 +74,5 @@ nginx -t
 ###############################################################################
 # 5 ) Kick everything
 ###############################################################################
-systemctl restart nginx
 systemctl restart php8.1-fpm
+systemctl restart nginx
