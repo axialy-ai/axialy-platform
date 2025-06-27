@@ -3,15 +3,15 @@ on:
   push:
     branches: [main]
 
-#########################
+###############################################################################
 #  repo-wide secrets
-#########################
+###############################################################################
 env:
   DIGITALOCEAN_TOKEN:      ${{ secrets.DIGITALOCEAN_TOKEN }}
   TF_VAR_do_token:         ${{ secrets.DIGITALOCEAN_TOKEN }}
 
   NAMESILO_API_KEY:        ${{ secrets.NAMESILO_API_KEY }}
-  NAMESILO_DOMAIN:         axialy.ai            # literal
+  NAMESILO_DOMAIN:         axialy.ai
 
   DROPLET_SSH_KEY:         ${{ secrets.DROPLET_SSH_KEY }}
   DROPLET_SSH_PASSPHRASE:  ${{ secrets.DROPLET_SSH_PASSPHRASE }}
@@ -19,59 +19,67 @@ env:
 
 jobs:
   all:
-    runs-on: ubuntu-24.04
-    defaults: { run: { shell: bash -eo pipefail } }
+    runs-on: ubuntu-24.04            # runner already has jq & zip
+    # ------------ DON’T override the shell here → that’s what killed us
 
     steps:
-    # ───────────────── 1.  checkout ─────────────────
+    # ───────────────────── 1.  checkout ────────────────────────────────
     - uses: actions/checkout@v4
 
-    # ───────────────── 2.  terraform cli ────────────
+    # ───────────────────── 2.  terraform cli ───────────────────────────
     - uses: hashicorp/setup-terraform@v3
-      with: { terraform_version: 1.8.2 }
+      with:
+        terraform_version: 1.8.2
 
-    # ───────────────── 3.  terraform apply ──────────
-    - name: Terraform init → apply
+    # ───────────────────── 3.  terraform init + apply ─────────────────
+    - name: Terraform apply
       run: |
+        set -eo pipefail
         terraform -chdir=infra init
         terraform -chdir=infra apply -auto-approve -input=false
 
-    # ───────────────── 4.  capture outputs ──────────
+    # ───────────────────── 4.  capture outputs into env ───────────────
     - id: capture
       run: |
-        # droplet IPs → env vars
-        IPS=$(terraform -chdir=infra output -json droplet_ips)
-        echo "ROOT_IP=$(  jq -r '.root'  <<<"$IPS")"  >>"$GITHUB_ENV"
-        echo "UI_IP=$(    jq -r '.ui'    <<<"$IPS")"  >>"$GITHUB_ENV"
-        echo "ADMIN_IP=$( jq -r '.admin' <<<"$IPS")"  >>"$GITHUB_ENV"
-        echo "API_IP=$(   jq -r '.api'   <<<"$IPS")"  >>"$GITHUB_ENV"
+        set -eo pipefail
+        IPS_JSON=$(terraform -chdir=infra output -json droplet_ips)
 
-        # DB connection → env vars
-        echo "DB_HOST=$(terraform -chdir=infra output -raw mysql_host)"      >>"$GITHUB_ENV"
-        echo "DB_PORT=$(terraform -chdir=infra output -raw mysql_port)"      >>"$GITHUB_ENV"
-        echo "DB_USER=$(terraform -chdir=infra output -raw mysql_user)"      >>"$GITHUB_ENV"
-        echo "DB_PASSWORD=$(terraform -chdir=infra output -raw mysql_password)" >>"$GITHUB_ENV"
+        # export individual IPs
+        for key in root ui admin api; do
+          val=$(jq -r --arg k "$key" '.[$k]' <<<"$IPS_JSON")
+          echo "${key^^}_IP=$val" >>"$GITHUB_ENV"
+        done
+
+        # DB connection bits
+        DB_PASSWORD=$(terraform -chdir=infra output -raw mysql_password)
         echo "::add-mask::$DB_PASSWORD"
+        {
+          echo "DB_HOST=$(terraform -chdir=infra output -raw mysql_host)"
+          echo "DB_PORT=$(terraform -chdir=infra output -raw mysql_port)"
+          echo "DB_USER=$(terraform -chdir=infra output -raw mysql_user)"
+          echo "DB_PASSWORD=$DB_PASSWORD"
+        } >>"$GITHUB_ENV"
 
-    # ───────────────── 5.  wait for ssh ─────────────
-    - name: ⏳ wait for SSH on all droplets
+    # ───────────────────── 5.  wait for SSH ───────────────────────────
+    - name: ⏳ wait for SSH on droplets
       run: |
+        set -eo pipefail
         wait_ssh () {
           local host=$1
-          echo "… $host"
+          echo "📡  $host"
           for i in {1..30}; do nc -z -w3 "$host" 22 && return; sleep 5; done
           echo "::error::$host never became reachable"; exit 1
         }
         wait_ssh "$ROOT_IP"; wait_ssh "$UI_IP"; wait_ssh "$ADMIN_IP"; wait_ssh "$API_IP"
 
-    # ───────────────── 6.  update DNS ───────────────
+    # ───────────────────── 6.  update DNS (NameSilo) ──────────────────
     - name: Update NameSilo zone
       env:
         NAMESILO_API_KEY: ${{ env.NAMESILO_API_KEY }}
         NAMESILO_DOMAIN:  ${{ env.NAMESILO_DOMAIN }}
       run: bash infra/update_namesilo.sh
 
-    # ───────────────── 7.  deploy code  ─────────────
+    # ───────────────────── 7.  rsync code to each droplet ─────────────
     - name: Rsync marketing → root
       uses: appleboy/scp-action@v0.1.5
       with:
@@ -120,8 +128,8 @@ jobs:
         strip_components: 1
         timeout:    120s
 
-    # ───────────────── 8.  write .env on Admin ─────
-    - name: Write .env for Admin
+    # ───────────────────── 8.  .env for Admin product ────────────────
+    - name: Write .env on Admin droplet
       uses: appleboy/ssh-action@v0.1.6
       with:
         host:       ${{ env.ADMIN_IP }}
@@ -138,4 +146,4 @@ jobs:
           DB_PASSWORD=$DB_PASSWORD
           EOF
           chown www-data:www-data /var/www/html/.env
-          systemctl reload php8.1-fpm || true
+          systemctl reload php8.1-fpm || true   # ignore if not installed yet
