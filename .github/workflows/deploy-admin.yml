@@ -34,6 +34,7 @@ jobs:
     - id: db
       name: Fetch Admin-DB connection info
       run: |
+        set -e
         CID=$(doctl databases list --format ID,Name --no-header \
                 | awk '$2=="axialy-db-cluster"{print $1; exit}')
         uri=$(doctl databases connection "$CID" --format URI --no-header)
@@ -67,8 +68,8 @@ jobs:
         done
         echo "::error::SSH never became ready"; exit 1
 
-    # ─── 6 ─ Ensure NGINX + PHP-FPM are ready (idempotent) ───────────
-    - name: Ensure NGINX + PHP-FPM are ready
+    # ── 6 ─ Ensure packages & services are present (config via cloud-init) ──
+    - name: Ensure NGINX + PHP-FPM are installed & running
       uses: appleboy/ssh-action@v0.1.6
       with:
         host:       ${{ steps.ip.outputs.ip }}
@@ -81,41 +82,8 @@ jobs:
             apt-get update -y
             DEBIAN_FRONTEND=noninteractive apt-get install -y nginx php8.1-fpm php8.1-mysql
           fi
-
-          PHP_SOCK=$(ls /run/php/php*-fpm.sock | head -n1)
-
-          cat >/etc/nginx/sites-available/default <<EOF
-          server {
-              listen 80 default_server;
-              listen [::]:80 default_server;
-              server_name admin.axialy.ai _;
-              root /var/www/html;
-              index index.php index.html;
-
-              location / {
-                  try_files \$uri \$uri/ /index.php?\$args;
-              }
-
-              location ~ \.php$ {
-                  include snippets/fastcgi-php.conf;
-                  fastcgi_pass unix:${PHP_SOCK};
-              }
-
-              location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff2?)$ {
-                  try_files \$uri =404;
-                  expires max;
-                  log_not_found off;
-              }
-
-              location ~ /\.(?!well-known) {
-                  deny all;
-              }
-          }
-          EOF
-
+          systemctl enable --now php8.1-fpm
           systemctl enable --now nginx
-          systemctl reload nginx
-          systemctl restart php*-fpm
 
     # ───────────────────────── 7 ─ Rsync code ────────────────────────
     - name: Rsync Admin build
@@ -153,4 +121,5 @@ jobs:
           chown www-data:www-data /var/www/html/.env
           chmod 640 /var/www/html/.env
 
-          systemctl restart php*-fpm
+          systemctl restart php8.1-fpm
+          systemctl reload nginx
