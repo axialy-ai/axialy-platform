@@ -42,7 +42,7 @@ chown www-data:www-data /var/www/html/.env
 chmod 600 /var/www/html/.env
 
 ###############################################################################
-# 4 ) Nginx virtual host
+# 4 ) Nginx virtual host  (***fixed*** – doc-root now /public)
 ###############################################################################
 cat >/etc/nginx/sites-available/default <<'CONF'
 server {
@@ -51,7 +51,8 @@ server {
 
     server_name admin.axialy.ai;
 
-    root /var/www/html;
+    # ── FIX: point Nginx at Laravel’s /public folder ──────────────
+    root /var/www/html/public;
     index index.php index.html;
 
     location / {
@@ -63,9 +64,13 @@ server {
         fastcgi_pass unix:/run/php/php8.1-fpm.sock;
     }
 
-    location ~ /\.ht {
+    # deny access to hidden files like .env, .git, etc.
+    location ~ /\. {
         deny all;
     }
+
+    access_log /var/log/nginx/access.log;
+    error_log  /var/log/nginx/error.log warn;
 }
 CONF
 
