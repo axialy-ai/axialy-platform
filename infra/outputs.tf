@@ -10,8 +10,7 @@ output "droplet_ips" {
   }
 }
 
-/* Connection details the admin application needs.
-   Marked sensitive so `terraform output` hides the password. */
+/* MySQL connection details for the Axialy Admin service */
 output "admin_db_config" {
   description = "MySQL connection details for the Axialy Admin service"
   value = {
