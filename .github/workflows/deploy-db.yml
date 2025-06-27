@@ -10,25 +10,26 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
-      TF_VAR_do_token:    ${{ secrets.TF_VAR_do_token }}   # if you’re already using it
-      DO_DB_CLUSTER:      7ca7a1f8-2971-4f9b-a54e-9d6e16d162bc   # <- cluster ID from TF
+      TF_VAR_do_token:    ${{ secrets.TF_VAR_do_token }}
+      DO_DB_CLUSTER:      7ca7a1f8-2971-4f9b-a54e-9d6e16d162bc   # cluster ID from Terraform
+
     steps:
       - uses: actions/checkout@v4
 
       - name: Install & auth doctl
         run: |
+          set -e
           ver=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest \
                | grep '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/')
           curl -sL "https://github.com/digitalocean/doctl/releases/download/v${ver}/doctl-${ver}-linux-amd64.tar.gz" | tar -xz
           sudo mv doctl /usr/local/bin
           doctl auth init -t "$DIGITALOCEAN_TOKEN"
 
-      - name: Get temporary connection strings
-        id: conn
+      - id: conn
+        name: Get temporary connection strings
         run: |
-          # This gives a 1-hour-lived mysql:// URI
+          set -e
           uri=$(doctl databases connection $DO_DB_CLUSTER --format URI --no-header)
-          # split into host/port/user/password/db
           host=$(echo $uri | sed -E 's|mysql://([^:]+):([^@]+)@([^:]+):([0-9]+)/(.+)|\3|')
           port=$(echo $uri | sed -E 's|mysql://([^:]+):([^@]+)@([^:]+):([0-9]+)/(.+)|\4|')
           user=$(echo $uri | sed -E 's|mysql://([^:]+):([^@]+)@([^:]+):([0-9]+)/(.+)|\1|')
@@ -39,14 +40,24 @@ jobs:
           echo "::add-mask::$pass"
           echo "pass=$pass" >> $GITHUB_OUTPUT
 
+      # ── Ensure the two databases exist (helps first-run pipeline) ──
+      - name: Ensure databases exist
+        run: |
+          mysql --ssl-mode=REQUIRED -h${{ steps.conn.outputs.host }} -P${{ steps.conn.outputs.port }} \
+                -u${{ steps.conn.outputs.user }} -p${{ steps.conn.outputs.pass }} \
+                -e "CREATE DATABASE IF NOT EXISTS Axialy_UI     CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;"
+          mysql --ssl-mode=REQUIRED -h${{ steps.conn.outputs.host }} -P${{ steps.conn.outputs.port }} \
+                -u${{ steps.conn.outputs.user }} -p${{ steps.conn.outputs.pass }} \
+                -e "CREATE DATABASE IF NOT EXISTS Axialy_Admin  CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;"
+
       - name: Apply Axialy_UI schema
         run: |
-          mysql -h${{ steps.conn.outputs.host }} -P${{ steps.conn.outputs.port }} \
-                -u${{ steps.conn.outputs.user }} -p${{ steps.conn.outputs.pass }} Axialy_UI \
-                < db/axialy_ui.sql
+          mysql --ssl-mode=REQUIRED -h${{ steps.conn.outputs.host }} -P${{ steps.conn.outputs.port }} \
+                -u${{ steps.conn.outputs.user }} -p${{ steps.conn.outputs.pass }} \
+                Axialy_UI < db/axialy_ui.sql
 
-      - name: Apply Axialy_ADMIN schema
+      - name: Apply Axialy_Admin schema
         run: |
-          mysql -h${{ steps.conn.outputs.host }} -P${{ steps.conn.outputs.port }} \
-                -u${{ steps.conn.outputs.user }} -p${{ steps.conn.outputs.pass }} Axialy_ADMIN \
-                < db/axialy_admin.sql
+          mysql --ssl-mode=REQUIRED -h${{ steps.conn.outputs.host }} -P${{ steps.conn.outputs.port }} \
+                -u${{ steps.conn.outputs.user }} -p${{ steps.conn.outputs.pass }} \
+                Axialy_Admin < db/axialy_admin.sql
