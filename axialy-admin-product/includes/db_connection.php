@@ -1,14 +1,14 @@
 <?php
-// /home/i17z4s936h3j/public_html/admin.axiaba.com/includes/db_connection.php
+/* axialy-admin-product/includes/db_connection.php
+   Unified DB connector – always use AdminDBConfig */
 
-use Axialy\AdminConfig\Config;
-require_once __DIR__ . '/Config.php';
+require_once __DIR__ . '/AdminDBConfig.php';
+use Axialy\AdminConfig\AdminDBConfig;
+
 try {
-    $cfg = Config::getInstance();
-    $dsn = "mysql:host={$cfg->get('db_host')};dbname={$cfg->get('db_name')};charset=utf8mb4";
-    $pdo = new PDO($dsn, $cfg->get('db_user'), $cfg->get('db_password'));
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-} catch (Exception $e) {
+    $pdo = AdminDBConfig::getInstance()->getPdo();
+} catch (\Throwable $e) {
     error_log('Admin DB connection failed: ' . $e->getMessage());
+    http_response_code(500);
     die('Database error (Admin). Please try again later.');
 }
