@@ -22,6 +22,7 @@ jobs:
     # ────────────────────────── 2 ─ doctl ────────────────────────────
     - name: Install & auth doctl
       run: |
+        set -e
         ver=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest \
                 | grep '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/')
         curl -sL "https://github.com/digitalocean/doctl/releases/download/v${ver}/doctl-${ver}-linux-amd64.tar.gz" \
@@ -66,8 +67,8 @@ jobs:
         done
         echo "::error::SSH never became ready"; exit 1
 
-    # ─────── 6 ─ Ensure NGINX + PHP-FPM are present & configured ─────
-    - name: Install NGINX + PHP on droplet
+    # ─── 6 ─ Ensure NGINX + PHP-FPM are ready (idempotent) ───────────
+    - name: Ensure NGINX + PHP-FPM are ready
       uses: appleboy/ssh-action@v0.1.6
       with:
         host:       ${{ steps.ip.outputs.ip }}
@@ -76,9 +77,10 @@ jobs:
         passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
         script: |
           set -e
-          export DEBIAN_FRONTEND=noninteractive
-          apt-get update -y
-          apt-get install -y nginx php-fpm php-mysql
+          if ! command -v nginx >/dev/null 2>&1; then
+            apt-get update -y
+            DEBIAN_FRONTEND=noninteractive apt-get install -y nginx php8.1-fpm php8.1-mysql
+          fi
 
           PHP_SOCK=$(ls /run/php/php*-fpm.sock | head -n1)
 
@@ -87,7 +89,6 @@ jobs:
               listen 80 default_server;
               listen [::]:80 default_server;
               server_name admin.axialy.ai _;
-
               root /var/www/html;
               index index.php index.html;
 
@@ -100,10 +101,14 @@ jobs:
                   fastcgi_pass unix:${PHP_SOCK};
               }
 
-              location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg)$ {
+              location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff2?)$ {
                   try_files \$uri =404;
                   expires max;
                   log_not_found off;
+              }
+
+              location ~ /\.(?!well-known) {
+                  deny all;
               }
           }
           EOF
