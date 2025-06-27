@@ -4,7 +4,7 @@ on:
     branches: [main]
 
 ###############################################################################
-#  repo-wide secrets
+# repo-wide secrets
 ###############################################################################
 env:
   DIGITALOCEAN_TOKEN:      ${{ secrets.DIGITALOCEAN_TOKEN }}
@@ -19,51 +19,58 @@ env:
 
 jobs:
   all:
-    runs-on: ubuntu-24.04            # runner already has jq & zip
-    # ------------ DON’T override the shell here → that’s what killed us
+    runs-on: ubuntu-24.04
 
     steps:
-    # ───────────────────── 1.  checkout ────────────────────────────────
+    # ───────────────── 1 ─ Checkout ────────────────────────────────────────
     - uses: actions/checkout@v4
 
-    # ───────────────────── 2.  terraform cli ───────────────────────────
+    # ───────────────── 2 ─ Terraform CLI ──────────────────────────────────
     - uses: hashicorp/setup-terraform@v3
       with:
         terraform_version: 1.8.2
 
-    # ───────────────────── 3.  terraform init + apply ─────────────────
+    # ───────────────── 3 ─ Terraform init ─────────────────────────────────
+    - name: Terraform init
+      run: terraform -chdir=infra init
+
+    # ───────────────── 4 ─ Install doctl (needed for import script) ───────
+    - name: Install doctl
+      run: |
+        set -e
+        VER=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest |
+              grep '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/')
+        curl -sL "https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz" |
+          tar -xz
+        sudo mv doctl /usr/local/bin
+
+    # ───────────────── 5 ─ doctl auth ─────────────────────────────────────
+    - name: doctl auth
+      run: doctl auth init -t "$DIGITALOCEAN_TOKEN"
+
+    # ───────────────── 6 ─ Import existing DO resources ───────────────────
+    - name: Import existing resources into state
+      run: bash infra/import_existing.sh
+
+    # ───────────────── 7 ─ Terraform apply ────────────────────────────────
     - name: Terraform apply
       run: |
         set -eo pipefail
-        terraform -chdir=infra init
         terraform -chdir=infra apply -auto-approve -input=false
 
-    # ───────────────────── 4.  capture outputs into env ───────────────
+    # ───────────────── 8 ─ Capture droplet IPs into env ───────────────────
     - id: capture
       run: |
-        set -eo pipefail
+        set -e
         IPS_JSON=$(terraform -chdir=infra output -json droplet_ips)
-
-        # export individual IPs
         for key in root ui admin api; do
-          val=$(jq -r --arg k "$key" '.[$k]' <<<"$IPS_JSON")
-          echo "${key^^}_IP=$val" >>"$GITHUB_ENV"
+          echo "${key^^}_IP=$(jq -r --arg k "$key" '.[$k]' <<<"$IPS_JSON")" >>"$GITHUB_ENV"
         done
 
-        # DB connection bits
-        DB_PASSWORD=$(terraform -chdir=infra output -raw mysql_password)
-        echo "::add-mask::$DB_PASSWORD"
-        {
-          echo "DB_HOST=$(terraform -chdir=infra output -raw mysql_host)"
-          echo "DB_PORT=$(terraform -chdir=infra output -raw mysql_port)"
-          echo "DB_USER=$(terraform -chdir=infra output -raw mysql_user)"
-          echo "DB_PASSWORD=$DB_PASSWORD"
-        } >>"$GITHUB_ENV"
-
-    # ───────────────────── 5.  wait for SSH ───────────────────────────
-    - name: ⏳ wait for SSH on droplets
+    # ───────────────── 9 ─ Wait for SSH on each droplet ───────────────────
+    - name: ⏳ wait for SSH
       run: |
-        set -eo pipefail
+        set -e
         wait_ssh () {
           local host=$1
           echo "📡  $host"
@@ -72,14 +79,14 @@ jobs:
         }
         wait_ssh "$ROOT_IP"; wait_ssh "$UI_IP"; wait_ssh "$ADMIN_IP"; wait_ssh "$API_IP"
 
-    # ───────────────────── 6.  update DNS (NameSilo) ──────────────────
-    - name: Update NameSilo zone
+    # ───────────────── 10 ─ Update NameSilo zone ──────────────────────────
+    - name: Update NameSilo DNS
       env:
         NAMESILO_API_KEY: ${{ env.NAMESILO_API_KEY }}
         NAMESILO_DOMAIN:  ${{ env.NAMESILO_DOMAIN }}
       run: bash infra/update_namesilo.sh
 
-    # ───────────────────── 7.  rsync code to each droplet ─────────────
+    # ───────────────── 11 ─ Rsync code to each droplet ────────────────────
     - name: Rsync marketing → root
       uses: appleboy/scp-action@v0.1.5
       with:
@@ -128,7 +135,7 @@ jobs:
         strip_components: 1
         timeout:    120s
 
-    # ───────────────────── 8.  .env for Admin product ────────────────
+    # ───────────────── 12 ─ Write .env on Admin droplet ───────────────────
     - name: Write .env on Admin droplet
       uses: appleboy/ssh-action@v0.1.6
       with:
@@ -136,14 +143,18 @@ jobs:
         username:   root
         key:        ${{ env.DROPLET_SSH_KEY }}
         passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
-        envs:       DB_HOST,DB_PORT,DB_USER,DB_PASSWORD
+        envs:       TF_VAR_do_token
         script: |
+          DB_HOST=$(terraform -chdir=infra output -raw mysql_host)
+          DB_PORT=$(terraform -chdir=infra output -raw mysql_port)
+          DB_USER=$(terraform -chdir=infra output -raw mysql_user)
+          DB_PASS=$(terraform -chdir=infra output -raw mysql_password)
           cat >/var/www/html/.env <<EOF
           DB_HOST=$DB_HOST
           DB_PORT=$DB_PORT
           DB_NAME=Axialy_Admin
           DB_USER=$DB_USER
-          DB_PASSWORD=$DB_PASSWORD
+          DB_PASSWORD=$DB_PASS
           EOF
           chown www-data:www-data /var/www/html/.env
-          systemctl reload php8.1-fpm || true   # ignore if not installed yet
+          systemctl reload php8.1-fpm || true
