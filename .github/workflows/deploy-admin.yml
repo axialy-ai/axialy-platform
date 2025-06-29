@@ -1,4 +1,4 @@
-# .github/workflows/deploy-admin.yml
+# .github/workflows/deploy-admin.yml          ⟶ REPLACE ENTIRE FILE
 name: Deploy ADMIN Product
 
 on:
@@ -16,21 +16,21 @@ jobs:
       DROPLET_SSH_PASSPHRASE:  ${{ secrets.DROPLET_SSH_PASSPHRASE }}
 
     steps:
-    # ────────────────────────── 1 ─ Checkout ──────────────────────────
+    # ────────────────────────────── 1 ─ Checkout ─────────────────────────────
     - uses: actions/checkout@v4
 
-    # ────────────────────────── 2 ─ doctl ────────────────────────────
+    # ────────────────────────────── 2 ─ doctl ────────────────────────────────
     - name: Install & auth doctl
       run: |
         set -e
         ver=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest \
-                | grep '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/')
+               | grep '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/')
         curl -sL "https://github.com/digitalocean/doctl/releases/download/v${ver}/doctl-${ver}-linux-amd64.tar.gz" \
           | tar -xz
         sudo mv doctl /usr/local/bin
         doctl auth init -t "$DIGITALOCEAN_TOKEN"
 
-    # ──────────────────────── 3 ─ DB credentials ─────────────────────
+    # ──────────────────────────── 3 ─ DB credentials ─────────────────────────
     - id: db
       name: Fetch Admin-DB connection info
       run: |
@@ -38,28 +38,30 @@ jobs:
         CID=$(doctl databases list --format ID,Name --no-header \
                 | awk '$2=="axialy-db-cluster"{print $1; exit}')
         uri=$(doctl databases connection "$CID" --format URI --no-header)
-        host=$(echo "$uri" | sed -E 's|mysql://[^:]+:[^@]+@([^:]+):([0-9]+)/.*|\1|')
-        port=$(echo "$uri" | sed -E 's|mysql://[^:]+:[^@]+@([^:]+):([0-9]+)/.*|\2|')
-        user=$(echo "$uri" | sed -E 's|mysql://([^:]+):[^@]+@.*|\1|')
-        pass=$(echo "$uri" | sed -E 's|mysql://[^:]+:([^@]+)@.*|\1|')
-        echo "db_host=$host" >>"$GITHUB_OUTPUT"
-        echo "db_port=$port" >>"$GITHUB_OUTPUT"
-        echo "db_user=$user" >>"$GITHUB_OUTPUT"
-        echo "::add-mask::$pass"
-        echo "db_pass=$pass" >>"$GITHUB_OUTPUT"
+        host=$(sed -E 's|mysql://[^:]+:[^@]+@([^:]+):([0-9]+)/.*|\1|' <<<"$uri")
+        port=$(sed -E 's|mysql://[^:]+:[^@]+@([^:]+):([0-9]+)/.*|\2|' <<<"$uri")
+        user=$(sed -E 's|mysql://([^:]+):[^@]+@.*|\1|'                <<<"$uri")
+        pass=$(sed -E 's|mysql://[^:]+:([^@]+)@.*|\1|'                <<<"$uri")
+        {
+          echo "db_host=$host"
+          echo "db_port=$port"
+          echo "db_user=$user"
+          echo "::add-mask::$pass"
+          echo "db_pass=$pass"
+        } >>"$GITHUB_OUTPUT"
 
-    # ──────────────────────── 4 ─ Find droplet ───────────────────────
+    # ───────────────────────────── 4 ─ Find droplet ──────────────────────────
     - id: ip
-      name: Look up ADMIN droplet IP
+      name: Look up admin droplet IP
       run: |
         ip=$(doctl compute droplet list --format Name,PublicIPv4 --no-header \
                | awk '$1=="admin.axialy.ai"{print $2; exit}')
         if [ -z "$ip" ]; then
-          echo "::error::Could not find droplet named admin.axialy.ai"; exit 1
+          echo "::error::admin.axialy.ai droplet not found"; exit 1
         fi
         echo "ip=$ip" >>"$GITHUB_OUTPUT"
 
-    # ──────────────────────── 5 ─ Wait for SSH ───────────────────────
+    # ───────────────────────────── 5 ─ Wait for SSH ──────────────────────────
     - name: Wait for SSH
       run: |
         for i in {1..30}; do
@@ -68,7 +70,7 @@ jobs:
         done
         echo "::error::SSH never became ready"; exit 1
 
-    # ── 6 ─ Ensure packages & services are present (config via cloud-init) ──
+    # ───── 6 ─ Ensure NGINX + PHP-FPM present (1st boot droplets only) ──────
     - name: Ensure NGINX + PHP-FPM are installed & running
       uses: appleboy/ssh-action@v0.1.6
       with:
@@ -80,26 +82,27 @@ jobs:
           set -e
           if ! command -v nginx >/dev/null 2>&1; then
             apt-get update -y
-            DEBIAN_FRONTEND=noninteractive apt-get install -y nginx php8.1-fpm php8.1-mysql
+            DEBIAN_FRONTEND=noninteractive \
+              apt-get install -y nginx php8.1-fpm php8.1-mysql
           fi
           systemctl enable --now php8.1-fpm
           systemctl enable --now nginx
 
-    # ───────────────────────── 7 ─ Rsync code ────────────────────────
+    # ───────────────────────────── 7 ─ Rsync code ────────────────────────────
     - name: Rsync Admin build
       uses: appleboy/scp-action@v0.1.5
       with:
-        host:       ${{ steps.ip.outputs.ip }}
-        username:   root
-        key:        ${{ env.DROPLET_SSH_KEY }}
-        passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
-        source:     axialy-admin-product/*
-        target:     /var/www/html/
+        host:         ${{ steps.ip.outputs.ip }}
+        username:     root
+        key:          ${{ env.DROPLET_SSH_KEY }}
+        passphrase:   ${{ env.DROPLET_SSH_PASSPHRASE }}
+        source:       axialy-admin-product/*
+        target:       /var/www/html/
         strip_components: 1
-        timeout:    120s
+        timeout:      120s
 
-    # ─────────────── 8 ─ Drop .env with runtime secrets ──────────────
-    - name: Write .env on droplet
+    # ─────────────── 8 ─ Provision /mnt/private_axiaba secrets ───────────────
+    - name: Drop environment files
       uses: appleboy/ssh-action@v0.1.6
       with:
         host:       ${{ steps.ip.outputs.ip }}
@@ -107,19 +110,19 @@ jobs:
         key:        ${{ env.DROPLET_SSH_KEY }}
         passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
         script: |
-          cat >/var/www/html/.env <<EOVARS
+          set -e
+          mkdir -p /mnt/private_axiaba
+          cat >/mnt/private_axiaba/.env.production <<EOF
           DB_HOST=${{ steps.db.outputs.db_host }}
           DB_PORT=${{ steps.db.outputs.db_port }}
           DB_NAME=Axialy_Admin
           DB_USER=${{ steps.db.outputs.db_user }}
           DB_PASSWORD=${{ steps.db.outputs.db_pass }}
-
-          ADMIN_DEFAULT_USER=${{ secrets.ADMIN_DEFAULT_USER }}
-          ADMIN_DEFAULT_EMAIL=${{ secrets.ADMIN_DEFAULT_EMAIL }}
-          ADMIN_DEFAULT_PASSWORD=${{ secrets.ADMIN_DEFAULT_PASSWORD }}
-          EOVARS
-          chown www-data:www-data /var/www/html/.env
-          chmod 640 /var/www/html/.env
-
+          EOF
+          # Keep the historical location as a symlink (harmless)
+          ln -sf /mnt/private_axiaba/.env.production /mnt/private_axiaba/.env.admin
+          ln -sf /mnt/private_axiaba/.env.admin      /var/www/html/.env
+          chown www-data:www-data /mnt/private_axiaba/.env.production
+          chmod 640               /mnt/private_axiaba/.env.production
           systemctl restart php8.1-fpm
           systemctl reload nginx
