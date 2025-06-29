@@ -5,7 +5,7 @@
 ###############################################################################
 
 ###############################################################################
-# 1 Packages
+# 1  Packages
 ###############################################################################
 package_update: true
 package_upgrade: true
@@ -19,10 +19,10 @@ packages:
   - php8.1-mbstring
   - unzip
   - git
-  - ufw                       # ← open the firewall on first boot
+  - ufw                     # open the firewall on first boot
 
 ###############################################################################
-# 2 DB credentials -> .env  (read by PHP *and* fallback for AdminDBConfig)
+# 2  DB credentials -> .env  (read by PHP and fallback for AdminDBConfig)
 ###############################################################################
 write_files:
   - path: /var/www/html/.env
@@ -36,7 +36,7 @@ write_files:
       DB_PASSWORD=${db_pass}
 
 ###############################################################################
-# 3 Nginx virtual host  - doc-root **/var/www/html**
+# 3  Nginx virtual host  - doc-root /var/www/html
 ###############################################################################
   - path: /etc/nginx/sites-available/admin.axialy.ai
     owner: root:root
@@ -71,7 +71,7 @@ write_files:
       }
 
 ###############################################################################
-# 4 Pass the same DB vars into PHP-FPM workers
+# 4  Pass the same DB vars into PHP-FPM workers
 ###############################################################################
   - path: /etc/php/8.1/fpm/pool.d/99-axialy-env.conf
     owner: root:root
@@ -85,7 +85,7 @@ write_files:
       env[DB_PASSWORD] = ${db_pass}
 
 ###############################################################################
-# 5 Initialisation commands
+# 5  Initialisation commands
 ###############################################################################
 runcmd:
   - [ bash, -c, "ln -sf /etc/nginx/sites-available/admin.axialy.ai /etc/nginx/sites-enabled/admin.axialy.ai" ]
@@ -93,5 +93,5 @@ runcmd:
   - [ bash, -c, "chown -R www-data:www-data /var/www/html" ]
   - [ systemctl, enable, --now, php8.1-fpm ]
   - [ systemctl, enable, --now, nginx ]
-  - [ bash, -c, "ufw allow 'Nginx Full' || true" ]   # ← open 80/443
+  - [ bash, -c, "ufw allow 'Nginx Full' || true" ]   # open 80/443
   - [ systemctl, reload, nginx ]
