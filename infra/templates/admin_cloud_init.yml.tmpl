@@ -1,6 +1,6 @@
 #cloud-config
 ###############################################################################
-# Axialy – Admin droplet bootstrap
+# Axialy - Admin droplet bootstrap
 # Rendered by Terraform.
 ###############################################################################
 
@@ -22,7 +22,7 @@ packages:
   - ufw                       # ← open the firewall on first boot
 
 ###############################################################################
-# 2 DB credentials → .env (read by PHP *and* fallback for AdminDBConfig)
+# 2 DB credentials -> .env  (read by PHP *and* fallback for AdminDBConfig)
 ###############################################################################
 write_files:
   - path: /var/www/html/.env
@@ -36,7 +36,7 @@ write_files:
       DB_PASSWORD=${db_pass}
 
 ###############################################################################
-# 3 Nginx virtual host  – doc-root **/var/www/html**
+# 3 Nginx virtual host  - doc-root **/var/www/html**
 ###############################################################################
   - path: /etc/nginx/sites-available/admin.axialy.ai
     owner: root:root
