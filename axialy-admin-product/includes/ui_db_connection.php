@@ -1,61 +1,58 @@
 <?php
-// /home/i17z4s936h3j/public_html/admin.axiaba.com/includes/ui_db_connection.php
-/**
- * This file connects to the "UI environment" DB, so doc management can
- * read/write the 'documents' table, etc. The environment is chosen from
- * $_SESSION['admin_env'] (production, beta, test, etc.).
- */
+/* axialy-admin-product/includes/ui_db_connection.php
+   Connects the Admin panel to the chosen UI-environment database.
+   Looks for .env files in /mnt/private_axiaba (override with PRIVATE_AXIABA_PATH). */
 
-// Make sure the session is started, so $_SESSION is accessible.
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
-// 1) Determine the environment from session
+/* ------------------------------------------------------------------
+ * 1) Which environment?  – fall back to 'production'
+ * ------------------------------------------------------------------ */
 $chosenEnv = $_SESSION['admin_env'] ?? 'production';
 
-// 2) Load the .env.<environment> file from private_axiaba
-$envFile = "/home/i17z4s936h3j/private_axiaba/.env.{$chosenEnv}";
-if (!file_exists($envFile)) {
-    // fallback or throw error
-    $envFile = "/home/i17z4s936h3j/private_axiaba/.env.production";
+/* ------------------------------------------------------------------
+ * 2) Locate & parse the .env.<env> file
+ * ------------------------------------------------------------------ */
+$basePath = getenv('PRIVATE_AXIABA_PATH') ?: '/mnt/private_axiaba';
+$envFile  = "{$basePath}/.env.{$chosenEnv}";
+if (!is_readable($envFile)) {
+    $envFile = "{$basePath}/.env.production";        // graceful fallback
 }
 
-// 3) Parse the file into environment variables
-$lines = file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-foreach ($lines as $line) {
-    if (strpos(trim($line), '#') === 0) {
-        continue;
-    }
-    if (strpos($line, '=') !== false) {
-        list($name, $value) = explode('=', $line, 2);
-        $name  = trim($name);
-        $value = trim($value);
-        // If quoted
-        if (preg_match('/^([\'"])(.*)\1$/', $value, $m)) {
-            $value = $m[2];
-        }
-        putenv("$name=$value");
-    }
+foreach (file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
+    $line = trim($line);
+    if ($line === '' || $line[0] === '#') { continue; }
+
+    if (!str_contains($line, '=')) { continue; }
+    [$k, $v] = array_pad(explode('=', $line, 2), 2, '');
+    $k = trim($k);
+    $v = trim($v);
+    if (preg_match('/^([\'"])(.*)\1$/', $v, $m)) { $v = $m[2]; }
+    putenv("{$k}={$v}");
 }
 
-// 4) Read needed vars: DB_HOST, DB_NAME, DB_USER, DB_PASSWORD
+/* ------------------------------------------------------------------
+ * 3) Build PDO connection
+ * ------------------------------------------------------------------ */
 $uiDbHost = getenv('DB_HOST');
+$uiDbPort = getenv('DB_PORT') ?: 3306;
 $uiDbName = getenv('DB_NAME');
 $uiDbUser = getenv('DB_USER');
 $uiDbPass = getenv('DB_PASSWORD');
 
 if (!$uiDbHost || !$uiDbName || !$uiDbUser || !$uiDbPass) {
-    throw new RuntimeException("Missing environment DB credentials in $envFile");
+    throw new RuntimeException("ui_db_connection: missing DB_* vars in {$envFile}");
 }
 
-// 5) Create a PDO connection to that environment's UI DB
-$dsn = "mysql:host=$uiDbHost;dbname=$uiDbName;charset=utf8mb4";
+$dsn = "mysql:host={$uiDbHost};port={$uiDbPort};dbname={$uiDbName};charset=utf8mb4";
 
 try {
     $pdoUI = new PDO($dsn, $uiDbUser, $uiDbPass, [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION
+        PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
     ]);
 } catch (PDOException $e) {
-    throw new RuntimeException("Error connecting to UI environment DB: " . $e->getMessage());
+    throw new RuntimeException("ui_db_connection: PDO error – " . $e->getMessage());
 }
