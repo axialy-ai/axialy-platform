@@ -23,13 +23,34 @@ jobs:
 
     # ───────────────────────────── 2 ─ doctl ────────────────────────────────
     - name: Install doctl
+      env:
+        # use the actions-supplied token so GitHub’s API never rate-limits us
+        GH_TOKEN: ${{ github.token }}
       run: |
-        ver=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest \
-              | grep '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/')
-        curl -sL "https://github.com/digitalocean/doctl/releases/download/v${ver}/doctl-${ver}-linux-amd64.tar.gz" \
-          | tar -xz
+        set -euo pipefail
+
+        # Query the latest tag (auth header avoids API limit; jq not needed)
+        ver=$(curl -sSfL -H "Authorization: bearer $GH_TOKEN" \
+                https://api.github.com/repos/digitalocean/doctl/releases/latest \
+              | grep -oP '"tag_name"\s*:\s*"\Kv[0-9.]+')
+
+        if [[ -z "$ver" ]]; then
+          echo "::warning ::Could not detect latest doctl – using fallback v1.108.0"
+          ver="v1.108.0"
+        fi
+
+        # Remove the leading “v” for the filename part
+        file_ver=${ver#v}
+
+        echo "Installing doctl $ver …"
+        curl -sSfL \
+          "https://github.com/digitalocean/doctl/releases/download/${ver}/doctl-${file_ver}-linux-amd64.tar.gz" \
+          | tar -xz doctl
+
         sudo mv doctl /usr/local/bin
+        doctl version
         doctl auth init -t "$DIGITALOCEAN_TOKEN"
+
 
     # ──────────────── 3 ─ Grab live DB credentials (cluster → URI) ──────────
     - id: db
