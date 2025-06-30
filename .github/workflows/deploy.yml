@@ -1,73 +1,118 @@
+# ======================================================================
+#  Axialy ‣ Admin — CI/CD pipeline
+#  COMPLETE replacement of .github/workflows/deploy.yml
+#  Drop this file in verbatim, commit, push to main.
+# ======================================================================
+
 name: deploy
 
 on:
   push:
-    branches: [main]
+    branches: [ main ]
 
 jobs:
   deploy:
+    name: Build & deploy to production droplet
     runs-on: ubuntu-24.04
 
+    # ----------------------------------------------------------
+    # Environment-wide variables / secrets
+    # ----------------------------------------------------------
     env:
-      # DigitalOcean & SSH secrets
-      DIGITALOCEAN_TOKEN:  ${{ secrets.DIGITALOCEAN_TOKEN }}
-      DROPLET_SSH_KEY:     ${{ secrets.DROPLET_SSH_KEY }}
-      DROPLET_SSH_PASSPHRASE: ${{ secrets.DROPLET_SSH_PASSPHRASE }}
-
-      # Pin a *known-good* doctl build
-      DOCTL_VERSION: v1.108.0
+      DIGITALOCEAN_TOKEN:      ${{ secrets.DIGITALOCEAN_TOKEN }}
+      DROPLET_SSH_KEY:         ${{ secrets.DROPLET_SSH_KEY }}
+      DROPLET_SSH_PASSPHRASE:  ${{ secrets.DROPLET_SSH_PASSPHRASE }}
+      DOCTL_VERSION:           v1.108.0        # ← **PINNED**, avoids seg-faults
+      DROPLET_IP:             ${{ secrets.DROPLET_IP }}
 
     steps:
-      # ────────────────────────────────────────────────────────────────
-      - name: Checkout repo
-        uses: actions/checkout@v4
+    # ----------------------------------------------------------
+    - name: ⬇️  Checkout repository
+      uses: actions/checkout@v4
 
-      # ────────────────────────────────────────────────────────────────
-      # Install doctl (pinned, no GitHub-API look-ups required)
-      - name: Install doctl
-        run: |
+    # ----------------------------------------------------------
+    - name: 🛠  Install doctl ${{ env.DOCTL_VERSION }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        ver="$DOCTL_VERSION"
+        file_ver="${ver#v}"
+        echo "Installing doctl $ver …"
+        curl -sSfL \
+          "https://github.com/digitalocean/doctl/releases/download/${ver}/doctl-${file_ver}-linux-amd64.tar.gz" \
+          | tar -xz doctl
+        sudo mv doctl /usr/local/bin
+        doctl version
+        doctl auth init -t "$DIGITALOCEAN_TOKEN"
+
+    # ----------------------------------------------------------
+    - name: 🔑  Fetch managed-DB credentials
+      id: db
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        CLUSTER="axialy-db-cluster"
+        CID=$(doctl databases list --format ID,Name --no-header \
+                | awk -v name="$CLUSTER" '$2==name{print $1;exit}')
+
+        if [[ -z "$CID" ]]; then
+          echo "::error ::Database cluster '$CLUSTER' not found"; exit 1
+        fi
+
+        URI=$(doctl databases connection "$CID" --format URI --no-header)
+
+        HOST=$(sed -E 's|mysql://[^:]+:[^@]+@([^:]+):([0-9]+)/.*|\1|' <<<"$URI")
+        PORT=$(sed -E 's|mysql://[^:]+:[^@]+@([^:]+):([0-9]+)/.*|\2|' <<<"$URI")
+        USER=$(sed -E 's|mysql://([^:]+):[^@]+@.*|\1|'                <<<"$URI")
+        PASS=$(sed -E 's|mysql://[^:]+:([^@]+)@.*|\1|'                <<<"$URI")
+
+        echo "::add-mask::$PASS"
+        {
+          echo "host=$HOST"
+          echo "port=$PORT"
+          echo "user=$USER"
+          echo "pass=$PASS"
+        } >> "$GITHUB_OUTPUT"
+
+    # ----------------------------------------------------------
+    - name: 📦  Package site
+      shell: bash
+      run: |
+        set -euo pipefail
+        tar --exclude=.git --exclude='.github' -czf site.tar.gz .
+
+    # ----------------------------------------------------------
+    - name: 🚚  Upload bundle to droplet
+      uses: appleboy/scp-action@v0.1.5
+      with:
+        host:        ${{ env.DROPLET_IP }}
+        username:    root
+        key:         ${{ env.DROPLET_SSH_KEY }}
+        passphrase:  ${{ env.DROPLET_SSH_PASSPHRASE }}
+        source:      site.tar.gz
+        target:      /tmp/
+
+    # ----------------------------------------------------------
+    - name: 🚀  Unpack & activate new release
+      uses: appleboy/ssh-action@v0.1.6
+      with:
+        host:        ${{ env.DROPLET_IP }}
+        username:    root
+        key:         ${{ env.DROPLET_SSH_KEY }}
+        passphrase:  ${{ env.DROPLET_SSH_PASSPHRASE }}
+        script: |
           set -euo pipefail
-          ver="$DOCTL_VERSION"
-          file_ver="${ver#v}"          # strip the leading “v”
-          echo "Installing doctl $ver …"
+          echo "+ Unpacking site.tar.gz"
+          rm -rf /var/www/html.bak || true
+          mv /var/www/html /var/www/html.bak || true
+          mkdir -p /var/www/html
+          tar -xzf /tmp/site.tar.gz -C /var/www/html
+          chown -R www-data:www-data /var/www/html
+          rm /tmp/site.tar.gz
+          echo "+ Reloading services"
+          systemctl reload php8.3-fpm || systemctl reload php8.2-fpm || true
+          systemctl reload nginx
+          echo "+ Deployment finished"
 
-          curl -sSfL \
-            "https://github.com/digitalocean/doctl/releases/download/${ver}/doctl-${file_ver}-linux-amd64.tar.gz" \
-            | tar -xz doctl
-          sudo mv doctl /usr/local/bin
-
-          doctl version
-          doctl auth init -t "$DIGITALOCEAN_TOKEN"
-
-      # ────────────────────────────────────────────────────────────────
-      # Grab the DB connection details (now with safety checks)
-      - name: Fetch DB credentials
-        id: db
-        run: |
-          set -euo pipefail
-
-          CID=$(doctl databases list --format ID,Name --no-header \
-                | awk '$2=="axialy-db-cluster"{print $1;exit}')
-
-          if [[ -z "$CID" ]]; then
-            echo "::error ::Database cluster 'axialy-db-cluster' not found"
-            exit 1
-          fi
-
-          uri=$(doctl databases connection "$CID" --format URI --no-header)
-
-          host=$(sed -E 's|mysql://[^:]+:[^@]+@([^:]+):([0-9]+)/.*|\1|' <<<"$uri")
-          port=$(sed -E 's|mysql://[^:]+:[^@]+@([^:]+):([0-9]+)/.*|\2|' <<<"$uri")
-          user=$(sed -E 's|mysql://([^:]+):[^@]+@.*|\1|'                <<<"$uri")
-          pass=$(sed -E 's|mysql://[^:]+:([^@]+)@.*|\1|'                <<<"$uri")
-
-          echo "::add-mask::$pass"
-          {
-            echo "host=$host"
-            echo "port=$port"
-            echo "user=$user"
-            echo "pass=$pass"
-          } >> "$GITHUB_OUTPUT"
-
-      # ────────────────────────────────────────────────────────────────
-      # … your remaining build / scp / ssh steps stay exactly the same …
+# ======================================================================
