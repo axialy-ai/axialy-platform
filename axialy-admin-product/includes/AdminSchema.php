@@ -1,15 +1,15 @@
 <?php
-/* Axialy ▸ Admin – one-shot bootstrap of the minimal schema
-   Safe to call repeatedly – everything is wrapped in IF NOT EXISTS. */
+/*  Axialy ▸ Admin – one-shot bootstrap for an empty Axialy_Admin DB.
+    Safe to include multiple times (runs once per request).             */
 
 namespace Axialy\AdminBootstrap;
 
 function ensureAdminSchema(\PDO $pdo): void
 {
-    static $done = false;          // so we run at most once per request
+    static $done = false;
     if ($done) { return; }
 
-    /* ─────── admin_users ─────── */
+    /* ─────────── admin_users ─────────── */
     $pdo->exec("
         CREATE TABLE IF NOT EXISTS admin_users (
             id            INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -22,7 +22,7 @@ function ensureAdminSchema(\PDO $pdo): void
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     ");
 
-    /* ─────── admin_user_sessions ─────── */
+    /* ─────────── admin_user_sessions ─────────── */
     $pdo->exec("
         CREATE TABLE IF NOT EXISTS admin_user_sessions (
             id             INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
