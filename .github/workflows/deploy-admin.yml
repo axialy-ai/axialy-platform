@@ -1,0 +1,102 @@
+# .github/workflows/deploy-admin.yml
+name: Deploy Admin
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:     [ "axialy-admin-product/**" ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      DIGITALOCEAN_TOKEN:     ${{ secrets.DIGITALOCEAN_TOKEN }}
+      DROPLET_SSH_KEY:        ${{ secrets.DROPLET_SSH_KEY }}
+      DROPLET_SSH_PASSPHRASE: ${{ secrets.DROPLET_SSH_PASSPHRASE }}
+
+    steps:
+    # ───────────────────────────── 1 ─ Checkout ─────────────────────────────
+    - uses: actions/checkout@v4
+
+    # ───────────────────────────── 2 ─ doctl ────────────────────────────────
+    - name: Install doctl
+      run: |
+        ver=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest \
+              | grep '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/')
+        curl -sL "https://github.com/digitalocean/doctl/releases/download/v${ver}/doctl-${ver}-linux-amd64.tar.gz" \
+          | tar -xz
+        sudo mv doctl /usr/local/bin
+        doctl auth init -t "$DIGITALOCEAN_TOKEN"
+
+    # ──────────────── 3 ─ Grab live DB credentials (cluster → URI) ──────────
+    - id: db
+      name: MySQL connection details
+      run: |
+        CID=$(doctl databases list --format ID,Name --no-header \
+                | awk '$2=="axialy-db-cluster"{print $1; exit}')
+        uri=$(doctl databases connection "$CID" --format URI --no-header)
+        host=$(sed -E 's|mysql://[^:]+:[^@]+@([^:]+):([0-9]+)/.*|\1|' <<<"$uri")
+        port=$(sed -E 's|mysql://[^:]+:[^@]+@([^:]+):([0-9]+)/.*|\2|' <<<"$uri")
+        user=$(sed -E 's|mysql://([^:]+):[^@]+@.*|\1|'                <<<"$uri")
+        pass=$(sed -E 's|mysql://[^:]+:([^@]+)@.*|\1|'                <<<"$uri")
+        {
+          echo "host=$host"
+          echo "port=$port"
+          echo "user=$user"
+          echo "::add-mask::$pass"
+          echo "pass=$pass"
+        } >>"$GITHUB_OUTPUT"
+
+    # ─────────────── 4 ─ Find the admin droplet’s public IP ────────────────
+    - id: ip
+      name: Admin droplet IP
+      run: |
+        ip=$(doctl compute droplet list --format Name,PublicIPv4 --no-header \
+               | awk '$1=="admin.axialy.ai"{print $2; exit}')
+        echo "ip=$ip" >>"$GITHUB_OUTPUT"
+
+    # ───────────────────────────── 5 ─ Wait for SSH ─────────────────────────
+    - name: Wait for SSH
+      run: |
+        for i in {1..30}; do
+          nc -z -w3 ${{ steps.ip.outputs.ip }} 22 && exit 0
+          sleep 5
+        done
+        echo "::error::SSH never became ready"; exit 1
+
+    # ───────────────────────────── 6 ─ Rsync code ───────────────────────────
+    - name: Upload Admin source
+      uses: appleboy/scp-action@v0.1.5
+      with:
+        host:             ${{ steps.ip.outputs.ip }}
+        username:         root
+        key:              ${{ env.DROPLET_SSH_KEY }}
+        passphrase:       ${{ env.DROPLET_SSH_PASSPHRASE }}
+        source:           axialy-admin-product/*
+        target:           /var/www/html/
+        strip_components: 1
+        timeout:          120s
+
+    # ──────────────────────── 7 ─ Write the .env file ───────────────────────
+    - name: Drop runtime secrets
+      uses: appleboy/ssh-action@v0.1.6
+      with:
+        host:       ${{ steps.ip.outputs.ip }}
+        username:   root
+        key:        ${{ env.DROPLET_SSH_KEY }}
+        passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
+        script: |
+          cat >/var/www/html/.env <<EOF
+          DB_HOST=${{ steps.db.outputs.host }}
+          DB_PORT=${{ steps.db.outputs.port }}
+          DB_NAME=Axialy_Admin
+          DB_USER=${{ steps.db.outputs.user }}
+          DB_PASSWORD=${{ steps.db.outputs.pass }}
+          ADMIN_DEFAULT_USER=${{ secrets.ADMIN_DEFAULT_USER }}
+          ADMIN_DEFAULT_EMAIL=${{ secrets.ADMIN_DEFAULT_EMAIL }}
+          ADMIN_DEFAULT_PASSWORD=${{ secrets.ADMIN_DEFAULT_PASSWORD }}
+          EOF
+          chown www-data:www-data /var/www/html/.env
+          chmod 640 /var/www/html/.env
+          systemctl restart php8.1-fpm
+          systemctl reload nginx
