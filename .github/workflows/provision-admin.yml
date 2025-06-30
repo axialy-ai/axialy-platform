@@ -1,84 +1,54 @@
-# Provisions (or updates) ONLY the infrastructure needed for the
-# Axialy Admin product:
-#   • 1× DigitalOcean MySQL cluster  (Axialy_Admin + Axialy_UI)
-#   • 1× Droplet  admin.axialy.ai
-#
-# Fully hands-off: just push to `main` and the workflow handles
-# everything, whether the resources already exist or not.
-
+# .github/workflows/provision-admin.yml
 name: Provision Admin Infra
 
 on:
+  workflow_dispatch:
   push:
     branches: [ "main" ]
     paths:
       - "infra/**"
-      - "axialy-admin-product/**"
 
 jobs:
   terraform:
     runs-on: ubuntu-latest
-
     env:
-      # DO credentials & TF variables come straight from repo secrets
       DIGITALOCEAN_TOKEN:     ${{ secrets.DIGITALOCEAN_TOKEN }}
       TF_VAR_do_token:        ${{ secrets.DIGITALOCEAN_TOKEN }}
       TF_VAR_ssh_fingerprint: ${{ secrets.SSH_FINGERPRINT }}
 
     steps:
-    # ──────────────────────────────────────────────────────────────
-    # 1 ▸ Checkout code
-    # ──────────────────────────────────────────────────────────────
     - uses: actions/checkout@v4
 
-    # ──────────────────────────────────────────────────────────────
-    # 2 ▸ Install doctl  (used by import_existing.sh)
-    # ──────────────────────────────────────────────────────────────
-    - name: Install doctl
+    # ---------- doctl (fixed: pin to current stable) -----------------------
+    - name: Install doctl v1.131.0
       run: |
-        set -e
-        VER=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest \
-               | grep '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/')
-        curl -sL "https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz" \
-          | tar -xz
+        curl -sSfL \
+          https://github.com/digitalocean/doctl/releases/download/v1.131.0/doctl-1.131.0-linux-amd64.tar.gz \
+          | tar -xz doctl
         sudo mv doctl /usr/local/bin
         doctl auth init -t "$DIGITALOCEAN_TOKEN"
 
-    # ──────────────────────────────────────────────────────────────
-    # 3 ▸ Install Terraform CLI
-    # ──────────────────────────────────────────────────────────────
+    # ---------- Terraform CLI ---------------------------------------------
     - uses: hashicorp/setup-terraform@v3
       with:
         terraform_version: 1.8.2
 
-    # ──────────────────────────────────────────────────────────────
-    # 4 ▸ Fresh working dir  (wipe any stale state)
-    # ──────────────────────────────────────────────────────────────
-    - name: Prepare Terraform working directory
+    # ---------- Fresh working dir & initial provider download -------------
+    - name: Init provider (offline)
       working-directory: infra
       run: |
-        rm -f terraform.tfstate*
-        rm -f .terraform.lock.hcl
+        rm -f terraform.tfstate* .terraform.lock.hcl
         rm -rf .terraform
+        terraform init -backend=false -input=false
 
-    # ──────────────────────────────────────────────────────────────
-    # 5 ▸ **Initialise provider BEFORE imports**  ← this is the fix
-    # ──────────────────────────────────────────────────────────────
-    - name: Terraform init (download provider for import)
+    # ---------- Import any pre-existing resources -------------------------
+    - name: Import existing DO resources
       working-directory: infra
-      run: terraform init -backend=false -input=false
+      run: |
+        bash import_existing.sh
 
-    # ──────────────────────────────────────────────────────────────
-    # 6 ▸ Import any pre-existing resources (idempotent)
-    # ──────────────────────────────────────────────────────────────
-    - name: Import existing resources
-      working-directory: infra
-      run: bash import_existing.sh
-
-    # ──────────────────────────────────────────────────────────────
-    # 7 ▸ Normal init / plan / apply
-    # ──────────────────────────────────────────────────────────────
-    - name: Terraform init
+    # ---------- Normal plan & apply ---------------------------------------
+    - name: Terraform init (remote state)
       working-directory: infra
       run: terraform init -input=false
 
