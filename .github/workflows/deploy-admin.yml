@@ -1,3 +1,4 @@
+# Ships PHP code, drops .env, waits for port 80.
 name: Deploy Admin
 
 on:
@@ -6,12 +7,11 @@ on:
     paths:
       - "axialy-admin-product/**"
       - ".github/workflows/deploy-admin.yml"
-  workflow_dispatch:
+  workflow_dispatch:        # ← manual run button
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
     env:
       DIGITALOCEAN_TOKEN:     ${{ secrets.DIGITALOCEAN_TOKEN }}
       DROPLET_SSH_KEY:        ${{ secrets.DROPLET_SSH_KEY }}
@@ -20,41 +20,41 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    # ───────── doctl ─────────
+    # ─── doctl ────────────────────────────────────────────────────────────
     - name: Install doctl
       env: { GH_TOKEN: ${{ github.token }} }
       run: |
-        set -euo pipefail
-        ver=$(curl -sSfL -H "Authorization: bearer $GH_TOKEN" \
-                https://api.github.com/repos/digitalocean/doctl/releases/latest |
-              grep -oP '"tag_name"\s*:\s*"\Kv[0-9.]+' || echo "v1.131.0")
-        curl -sSfL \
-          "https://github.com/digitalocean/doctl/releases/download/${ver}/doctl-${ver#v}-linux-amd64.tar.gz" |
+        ver=$(
+          curl -sSfL -H "Authorization: bearer $GH_TOKEN" \
+            https://api.github.com/repos/digitalocean/doctl/releases/latest |
+          grep -oP '"tag_name"\s*:\s*"\Kv[0-9.]+' || echo "v1.131.0"
+        )
+        curl -sSfL "https://github.com/digitalocean/doctl/releases/download/${ver}/doctl-${ver#v}-linux-amd64.tar.gz" |
           tar -xz doctl
         sudo mv doctl /usr/local/bin
         doctl auth init -t "$DIGITALOCEAN_TOKEN"
 
-    # ───────── DB creds ──────
+    # ─── DB connection details ───────────────────────────────────────────
     - id: db
       run: |
         CID=$(doctl databases list --format ID,Name --no-header |
               awk '$2=="axialy-db-cluster"{print $1; exit}')
-        URI=$(doctl databases connection "$CID" --format URI --no-header)
-        host=$(sed -E 's|mysql://[^:]+:[^@]+@([^:]+):([0-9]+)/.*|\1|' <<<"$URI")
-        port=$(sed -E 's|mysql://[^:]+:[^@]+@([^:]+):([0-9]+)/.*|\2|' <<<"$URI")
-        user=$(sed -E 's|mysql://([^:]+):[^@]+@.*|\1|'                <<<"$URI")
-        pass=$(sed -E 's|mysql://[^:]+:([^@]+)@.*|\1|'                <<<"$URI")
+        uri=$(doctl databases connection "$CID" --format URI --no-header)
+        host=$(sed -E 's|mysql://[^:]+:[^@]+@([^:]+):([0-9]+)/.*|\1|' <<<"$uri")
+        port=$(sed -E 's|mysql://[^:]+:[^@]+@([^:]+):([0-9]+)/.*|\2|' <<<"$uri")
+        user=$(sed -E 's|mysql://([^:]+):[^@]+@.*|\1|'                <<<"$uri")
+        pass=$(sed -E 's|mysql://[^:]+:([^@]+)@.*|\1|'                <<<"$uri")
         echo "::add-mask::$pass"
         { echo "host=$host"; echo "port=$port"; echo "user=$user"; echo "pass=$pass"; } >>"$GITHUB_OUTPUT"
 
-    # ───────── droplet IP ────
+    # ─── Find droplet IP ─────────────────────────────────────────────────
     - id: ip
       run: |
         ip=$(doctl compute droplet list --format Name,PublicIPv4 --no-header |
              awk '$1=="admin.axialy.ai"{print $2; exit}')
         echo "ip=$ip" >>"$GITHUB_OUTPUT"
 
-    # ───────── wait SSH ──────
+    # ─── Wait for SSH port 22 ────────────────────────────────────────────
     - name: Wait for SSH
       run: |
         for i in {1..30}; do
@@ -63,7 +63,7 @@ jobs:
         done
         echo "::error ::SSH never became ready"; exit 1
 
-    # ───────── rsync code ────
+    # ─── Copy code via SCP  ──────────────────────────────────────────────
     - name: Upload Admin source
       uses: appleboy/scp-action@v0.1.5
       with:
@@ -76,7 +76,7 @@ jobs:
         strip_components: 1
         timeout:          120s
 
-    # ───────── drop .env ─────
+    # ─── Drop .env & reload services ─────────────────────────────────────
     - name: Write runtime secrets
       uses: appleboy/ssh-action@v0.1.6
       with:
@@ -100,7 +100,7 @@ jobs:
           systemctl reload php-fpm
           systemctl reload nginx
 
-    # ───────── verify HTTP ───
+    # ─── Confirm HTTP port 80 responds ───────────────────────────────────
     - name: Wait for HTTP
       run: |
         for i in {1..60}; do
