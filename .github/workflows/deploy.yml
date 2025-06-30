@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-24.04
 
     # -------------------------------------------------------------------
-    #  Secrets that already exist in your repo
+    #  Secrets that already exist in the repo
     # -------------------------------------------------------------------
     env:
       DIGITALOCEAN_TOKEN:      ${{ secrets.DIGITALOCEAN_TOKEN }}
@@ -19,9 +19,9 @@ jobs:
       DROPLET_SSH_PASSPHRASE:  ${{ secrets.DROPLET_SSH_PASSPHRASE }}
       DROPLET_IP:              ${{ secrets.DROPLET_IP }}
 
-      # internal constants
+      # constants
       CLUSTER_NAME:  axialy-db-cluster
-      REGION:        nyc3              # change if you want another region
+      REGION:        nyc3              # change if you prefer another region
       DB_SIZE:       db-s-1vcpu-1gb    # cheapest; tweak as needed
       ENGINE_VER:    8                 # MySQL 8
       DOCTL_VERSION: v1.108.0
@@ -57,26 +57,20 @@ jobs:
 
         if [[ -z "$CLUSTER_ID" ]]; then
           echo "+ Not found – creating now"
-          # create returns JSON; extract the ID with jq
-          CLUSTER_ID=$(doctl databases create "$CLUSTER_NAME" \
-                         --engine mysql          \
-                         --num-nodes 1           \
-                         --size "$DB_SIZE"       \
-                         --region "$REGION"      \
-                         --version "$ENGINE_VER" \
-                         --format ID             \
-                         --no-header)
-          echo "+ Cluster ID: $CLUSTER_ID"
-
-          echo "+ Waiting until status == online (can be 2-4 min)…"
-          until [[ "$(doctl databases get "$CLUSTER_ID" --format Status --no-header)" == "online" ]]; do
-            sleep 10
-          done
+          # doctl ≤1.108 doesn’t support --format on ‘create’; use JSON + grep
+          CLUSTER_ID=$(doctl databases create "$CLUSTER_NAME"        \
+                         --engine mysql                              \
+                         --num-nodes 1                               \
+                         --size "$DB_SIZE"                           \
+                         --region "$REGION"                          \
+                         --version "$ENGINE_VER"                     \
+                         --wait -o json                              \
+                       | grep -oP '"id":"\K[^"]+')
+          echo "+ Cluster ID: $CLUSTER_ID (ready)"
         else
           echo "+ Found: $CLUSTER_ID"
         fi
 
-        # ----------------------------------------------------------------
         echo "+ Pulling connection string"
         URI=$(doctl databases connection "$CLUSTER_ID" --format URI --no-header)
 
