@@ -11,9 +11,8 @@ provider "digitalocean" {
   token = var.do_token
 }
 
-# ------------------------------------------------------------------------
-# Axialy project (already exists – import on first run)
-# ------------------------------------------------------------------------
+/* ───────────────────────────────────────────
+   Project (created once, then imported)     */
 resource "digitalocean_project" "axialy" {
   name        = "Axialy Platform"
   description = "Everything related to Axialy"
@@ -21,9 +20,8 @@ resource "digitalocean_project" "axialy" {
   environment = "Production"
 }
 
-# ------------------------------------------------------------------------
-# MySQL cluster (admin + ui databases)
-# ------------------------------------------------------------------------
+/* ───────────────────────────────────────────
+   MySQL cluster + databases                 */
 resource "digitalocean_database_cluster" "mysql" {
   name       = "axialy-db-cluster"
   engine     = "mysql"
@@ -43,20 +41,19 @@ resource "digitalocean_database_db" "ui" {
   cluster_id = digitalocean_database_cluster.mysql.id
 }
 
-# ------------------------------------------------------------------------
-# Admin droplet – cloud-init installs nginx + PHP
-# ------------------------------------------------------------------------
+/* ───────────────────────────────────────────
+   Admin droplet                             */
 resource "digitalocean_droplet" "admin" {
-  name              = "admin.axialy.ai"
-  region            = "sfo3"
-  size              = "s-1vcpu-1gb"
-  image             = "ubuntu-22-04-x64"
-  ssh_keys          = [var.ssh_fingerprint]
-  tags              = ["axialy", "admin"]
-  user_data         = file("${path.module}/user_data/admin_lemp.sh")
+  name       = "admin.axialy.ai"
+  region     = "sfo3"
+  size       = "s-1vcpu-1gb"
+  image      = "ubuntu-22-04-x64"
+  ssh_keys   = [var.ssh_fingerprint]
+  user_data  = file("${path.module}/user_data/admin_lemp.sh")
+  tags       = ["axialy", "admin"]
 }
 
-# Attach droplet & DB to the project (so they’re grouped in DO console)
+/* Attach resources to the project */
 resource "digitalocean_project_resources" "attach" {
   project   = digitalocean_project.axialy.id
   resources = [
@@ -65,7 +62,7 @@ resource "digitalocean_project_resources" "attach" {
   ]
 }
 
-# Public IP of the admin droplet
+/* Quick access to the IP */
 output "admin_ip" {
   value = digitalocean_droplet.admin.ipv4_address
 }
