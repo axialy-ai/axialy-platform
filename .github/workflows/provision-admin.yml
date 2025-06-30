@@ -1,10 +1,11 @@
+# Creates/updates: DB cluster, databases, droplet (cloud-init installs nginx/PHP)
 name: Provision Admin Infra
 
 on:
   push:
     branches: [ "main" ]
-    paths:
-      - "infra/**"
+    paths: [ "infra/**" ]
+  workflow_dispatch:        # ← manual run button is back
 
 jobs:
   terraform:
@@ -18,11 +19,27 @@ jobs:
     - uses: actions/checkout@v4
 
     - uses: hashicorp/setup-terraform@v3
-      with:
-        terraform_version: 1.8.2
+      with: { terraform_version: 1.8.2 }
 
-    - name: Terraform init / plan / apply
-      working-directory: infra
+    - name: Install doctl (for import_existing.sh)
       run: |
-        terraform init -input=false
-        terraform apply -auto-approve -input=false
+        curl -sSfL https://github.com/digitalocean/doctl/releases/download/v1.131.0/doctl-1.131.0-linux-amd64.tar.gz | tar -xz
+        sudo mv doctl /usr/local/bin
+      env: { DIGITALOCEAN_TOKEN: "${{ secrets.DIGITALOCEAN_TOKEN }}" }
+
+    - name: Terraform init (download provider so imports work)
+      working-directory: infra
+      run: terraform init -backend=false -input=false
+
+    - name: Import existing resources
+      working-directory: infra
+      run: bash import_existing.sh
+      env: { DIGITALOCEAN_TOKEN: "${{ secrets.DIGITALOCEAN_TOKEN }}" }
+
+    - name: Terraform init
+      working-directory: infra
+      run: terraform init -input=false
+
+    - name: Terraform apply
+      working-directory: infra
+      run: terraform apply -auto-approve -input=false
