@@ -1,7 +1,6 @@
 # ======================================================================
-#  Axialy ‣ Admin — CI/CD pipeline
-#  COMPLETE replacement of .github/workflows/deploy.yml
-#  Drop this file in verbatim, commit, push to main.
+#  Axialy ‣ Admin  •  Production deploy pipeline
+#  FULL FILE – replace the existing .github/workflows/deploy.yml
 # ======================================================================
 
 name: deploy
@@ -15,104 +14,113 @@ jobs:
     name: Build & deploy to production droplet
     runs-on: ubuntu-24.04
 
-    # ----------------------------------------------------------
-    # Environment-wide variables / secrets
-    # ----------------------------------------------------------
+    # ------------------------------------------------------------ #
+    #  Global variables / secrets
+    # ------------------------------------------------------------ #
     env:
       DIGITALOCEAN_TOKEN:      ${{ secrets.DIGITALOCEAN_TOKEN }}
       DROPLET_SSH_KEY:         ${{ secrets.DROPLET_SSH_KEY }}
       DROPLET_SSH_PASSPHRASE:  ${{ secrets.DROPLET_SSH_PASSPHRASE }}
-      DOCTL_VERSION:           v1.108.0        # ← **PINNED**, avoids seg-faults
-      DROPLET_IP:             ${{ secrets.DROPLET_IP }}
+      DROPLET_IP:              ${{ secrets.DROPLET_IP }}          # e.g. 146.190.xxx.xxx
+      DB_CLUSTER_ID:           ${{ secrets.DB_CLUSTER_ID }}       # preferred  (looks like: 01a2b3c4-abcd-1234)
+      DB_CLUSTER_NAME:         ${{ secrets.DB_CLUSTER_NAME }}     # optional fallback (“axialy-db-cluster”)
+      DOCTL_VERSION:           v1.108.0           # **pinned – proven stable**
 
     steps:
-    # ----------------------------------------------------------
+    # ------------------------------------------------------------ #
     - name: ⬇️  Checkout repository
       uses: actions/checkout@v4
 
-    # ----------------------------------------------------------
-    - name: 🛠  Install doctl ${{ env.DOCTL_VERSION }}
+    # ------------------------------------------------------------ #
+    #  Install *exact* doctl version (no auto-upgrade surprises)
+    # ------------------------------------------------------------ #
+    - name: 🛠  Install doctl
       shell: bash
       run: |
         set -euo pipefail
-        ver="$DOCTL_VERSION"
-        file_ver="${ver#v}"
-        echo "Installing doctl $ver …"
         curl -sSfL \
-          "https://github.com/digitalocean/doctl/releases/download/${ver}/doctl-${file_ver}-linux-amd64.tar.gz" \
+          "https://github.com/digitalocean/doctl/releases/download/${DOCTL_VERSION}/doctl-${DOCTL_VERSION#v}-linux-amd64.tar.gz" \
           | tar -xz doctl
         sudo mv doctl /usr/local/bin
         doctl version
         doctl auth init -t "$DIGITALOCEAN_TOKEN"
 
-    # ----------------------------------------------------------
+    # ------------------------------------------------------------ #
+    #  Grab DB credentials (works with either ID or Name)
+    # ------------------------------------------------------------ #
     - name: 🔑  Fetch managed-DB credentials
       id: db
       shell: bash
       run: |
         set -euo pipefail
 
-        CLUSTER="axialy-db-cluster"
-        CID=$(doctl databases list --format ID,Name --no-header \
-                | awk -v name="$CLUSTER" '$2==name{print $1;exit}')
-
-        if [[ -z "$CID" ]]; then
-          echo "::error ::Database cluster '$CLUSTER' not found"; exit 1
+        if [[ -n "${DB_CLUSTER_ID:-}" ]]; then
+          CLUSTER_ID="$DB_CLUSTER_ID"
+        else
+          CLUSTER_ID=$(doctl databases list --format ID,Name --no-header \
+                        | awk -v n="${DB_CLUSTER_NAME:-axialy-db-cluster}" '$2==n{print $1;exit}')
+          [[ -z "$CLUSTER_ID" ]] && { echo "::error ::Database cluster not found"; exit 1; }
         fi
 
-        URI=$(doctl databases connection "$CID" --format URI --no-header)
+        URI=$(doctl databases connection "$CLUSTER_ID" --format URI --no-header)
 
-        HOST=$(sed -E 's|mysql://[^:]+:[^@]+@([^:]+):([0-9]+)/.*|\1|' <<<"$URI")
-        PORT=$(sed -E 's|mysql://[^:]+:[^@]+@([^:]+):([0-9]+)/.*|\2|' <<<"$URI")
-        USER=$(sed -E 's|mysql://([^:]+):[^@]+@.*|\1|'                <<<"$URI")
-        PASS=$(sed -E 's|mysql://[^:]+:([^@]+)@.*|\1|'                <<<"$URI")
+        host=$(sed -E 's|mysql://[^:]+:[^@]+@([^:]+):([0-9]+)/.*|\1|' <<<"$URI")
+        port=$(sed -E 's|mysql://[^:]+:[^@]+@([^:]+):([0-9]+)/.*|\2|' <<<"$URI")
+        user=$(sed -E 's|mysql://([^:]+):[^@]+@.*|\1|'                <<<"$URI")
+        pass=$(sed -E 's|mysql://[^:]+:([^@]+)@.*|\1|'                <<<"$URI")
 
-        echo "::add-mask::$PASS"
+        echo "::add-mask::$pass"
         {
-          echo "host=$HOST"
-          echo "port=$PORT"
-          echo "user=$USER"
-          echo "pass=$PASS"
+          echo "host=$host"
+          echo "port=$port"
+          echo "user=$user"
+          echo "pass=$pass"
         } >> "$GITHUB_OUTPUT"
 
-    # ----------------------------------------------------------
-    - name: 📦  Package site
+    # ------------------------------------------------------------ #
+    #  Pack the site
+    # ------------------------------------------------------------ #
+    - name: 📦  Create artefact tarball
       shell: bash
       run: |
         set -euo pipefail
         tar --exclude=.git --exclude='.github' -czf site.tar.gz .
 
-    # ----------------------------------------------------------
-    - name: 🚚  Upload bundle to droplet
+    # ------------------------------------------------------------ #
+    #  Upload to the droplet
+    # ------------------------------------------------------------ #
+    - name: 🚚  Copy bundle to droplet
       uses: appleboy/scp-action@v0.1.5
       with:
-        host:        ${{ env.DROPLET_IP }}
-        username:    root
-        key:         ${{ env.DROPLET_SSH_KEY }}
-        passphrase:  ${{ env.DROPLET_SSH_PASSPHRASE }}
-        source:      site.tar.gz
-        target:      /tmp/
+        host:       ${{ env.DROPLET_IP }}
+        username:   root
+        key:        ${{ env.DROPLET_SSH_KEY }}
+        passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
+        source:     site.tar.gz
+        target:     /tmp/
 
-    # ----------------------------------------------------------
-    - name: 🚀  Unpack & activate new release
+    # ------------------------------------------------------------ #
+    #  Unpack & hot-reload services
+    # ------------------------------------------------------------ #
+    - name: 🚀  Activate new release
       uses: appleboy/ssh-action@v0.1.6
       with:
-        host:        ${{ env.DROPLET_IP }}
-        username:    root
-        key:         ${{ env.DROPLET_SSH_KEY }}
-        passphrase:  ${{ env.DROPLET_SSH_PASSPHRASE }}
+        host:       ${{ env.DROPLET_IP }}
+        username:   root
+        key:        ${{ env.DROPLET_SSH_KEY }}
+        passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
         script: |
           set -euo pipefail
           echo "+ Unpacking site.tar.gz"
           rm -rf /var/www/html.bak || true
-          mv /var/www/html /var/www/html.bak || true
+          [[ -d /var/www/html ]] && mv /var/www/html /var/www/html.bak
           mkdir -p /var/www/html
           tar -xzf /tmp/site.tar.gz -C /var/www/html
           chown -R www-data:www-data /var/www/html
           rm /tmp/site.tar.gz
           echo "+ Reloading services"
-          systemctl reload php8.3-fpm || systemctl reload php8.2-fpm || true
+          (systemctl reload php8.3-fpm || systemctl reload php8.2-fpm || true)
           systemctl reload nginx
-          echo "+ Deployment finished"
+          echo "+ Deployment complete"
 
 # ======================================================================
