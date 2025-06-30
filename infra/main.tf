@@ -1,6 +1,10 @@
 ###############################################################################
-# 1. Managed MySQL cluster  (Axialy_Admin  +  Axialy_UI)
+# infra/main.tf           ◂─ ONLY FILE UPDATED
 ###############################################################################
+
+############################
+# 1 ▸ Managed MySQL cluster
+############################
 resource "digitalocean_database_cluster" "mysql" {
   name       = "axialy-db-cluster"
   engine     = "mysql"
@@ -20,9 +24,9 @@ resource "digitalocean_database_db" "ui" {
   name       = "Axialy_UI"
 }
 
-###############################################################################
-# 2. Admin droplet  – ready for rsync-based deployments
-###############################################################################
+###############################
+# 2 ▸ Admin droplet + cloud-init
+###############################
 locals {
   admin_cloud_init = <<EOF
 #cloud-config
@@ -31,12 +35,42 @@ packages:
   - nginx
   - php8.1-fpm
   - php8.1-mysql
+  - php8.1-cli
   - ufw
 
+write_files:
+  - path: /etc/nginx/sites-available/admin.axialy.ai
+    owner: root:root
+    permissions: "0644"
+    content: |
+      server {
+          listen 80;
+          listen [::]:80;
+          server_name admin.axialy.ai _;
+          root /var/www/html;
+          index index.php index.html;
+          
+          location / {
+              try_files \$uri \$uri/ /index.php?\$args;
+          }
+
+          location ~ \.php$ {
+              include snippets/fastcgi-php.conf;
+              fastcgi_pass unix:/run/php/php8.1-fpm.sock;
+          }
+
+          location ~ /\.(?!well-known) {
+              deny all;
+          }
+      }
+
 runcmd:
-  - systemctl enable --now nginx
-  - systemctl enable --now php8.1-fpm
-  - ufw allow 'Nginx Full' || true
+  - [bash, -c, "ln -sf /etc/nginx/sites-available/admin.axialy.ai /etc/nginx/sites-enabled/admin.axialy.ai"]
+  - [bash, -c, "rm -f /etc/nginx/sites-enabled/default"]
+  - [systemctl, enable, --now, php8.1-fpm]
+  - [systemctl, enable, --now, nginx]
+  - [bash, -c, "ufw allow 'Nginx Full' || true"]
+  - [systemctl, reload, nginx]
 EOF
 }
 
@@ -50,9 +84,9 @@ resource "digitalocean_droplet" "admin" {
   tags       = ["axialy", "admin"]
 }
 
-###############################################################################
-# 3. Handy outputs
-###############################################################################
+##################
+# 3 ▸ Helpful outputs
+##################
 output "admin_ip" {
   value = digitalocean_droplet.admin.ipv4_address
 }
