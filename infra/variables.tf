@@ -4,6 +4,6 @@ variable "do_token" {
 }
 
 variable "ssh_fingerprint" {
-  description = "Fingerprint of the SSH key that will access the droplet"
+  description = "Fingerprint of the SSH key used for the droplet"
   type        = string
 }
