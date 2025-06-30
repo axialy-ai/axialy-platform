@@ -1,40 +1,39 @@
-# ======================================================================
-#  Axialy ‣ Admin  •  Production deploy pipeline
-#  FULL FILE – replace the existing .github/workflows/deploy.yml
-# ======================================================================
+# =======================================================================
+#  Axialy ▸ Admin  – production deploy (self-provisioning DB cluster)
+# =======================================================================
 
 name: deploy
-
-on:
-  push:
-    branches: [ main ]
+on: [push]
 
 jobs:
   deploy:
-    name: Build & deploy to production droplet
+    name: Build & deploy to prod droplet
     runs-on: ubuntu-24.04
 
-    # ------------------------------------------------------------ #
-    #  Global variables / secrets
-    # ------------------------------------------------------------ #
+    # -------------------------------------------------------------------
+    #  Secrets that already exist in your repo
+    # -------------------------------------------------------------------
     env:
       DIGITALOCEAN_TOKEN:      ${{ secrets.DIGITALOCEAN_TOKEN }}
       DROPLET_SSH_KEY:         ${{ secrets.DROPLET_SSH_KEY }}
       DROPLET_SSH_PASSPHRASE:  ${{ secrets.DROPLET_SSH_PASSPHRASE }}
-      DROPLET_IP:              ${{ secrets.DROPLET_IP }}          # e.g. 146.190.xxx.xxx
-      DB_CLUSTER_ID:           ${{ secrets.DB_CLUSTER_ID }}       # preferred  (looks like: 01a2b3c4-abcd-1234)
-      DB_CLUSTER_NAME:         ${{ secrets.DB_CLUSTER_NAME }}     # optional fallback (“axialy-db-cluster”)
-      DOCTL_VERSION:           v1.108.0           # **pinned – proven stable**
+      DROPLET_IP:              ${{ secrets.DROPLET_IP }}
+
+      # internal constants
+      CLUSTER_NAME:  axialy-db-cluster
+      REGION:        nyc3              # change if you want another region
+      DB_SIZE:       db-s-1vcpu-1gb    # cheapest; tweak as needed
+      ENGINE_VER:    8                 # MySQL 8
+      DOCTL_VERSION: v1.108.0
 
     steps:
-    # ------------------------------------------------------------ #
-    - name: ⬇️  Checkout repository
+
+    # ------------------------------------------------------------------
+    - name: 🚚  Checkout
       uses: actions/checkout@v4
 
-    # ------------------------------------------------------------ #
-    #  Install *exact* doctl version (no auto-upgrade surprises)
-    # ------------------------------------------------------------ #
-    - name: 🛠  Install doctl
+    # ------------------------------------------------------------------
+    - name: 🛠  Install doctl ${{ env.DOCTL_VERSION }}
       shell: bash
       run: |
         set -euo pipefail
@@ -45,23 +44,40 @@ jobs:
         doctl version
         doctl auth init -t "$DIGITALOCEAN_TOKEN"
 
-    # ------------------------------------------------------------ #
-    #  Grab DB credentials (works with either ID or Name)
-    # ------------------------------------------------------------ #
-    - name: 🔑  Fetch managed-DB credentials
+    # ------------------------------------------------------------------
+    - name: 🗄️  Ensure managed-DB cluster exists
       id: db
       shell: bash
       run: |
         set -euo pipefail
 
-        if [[ -n "${DB_CLUSTER_ID:-}" ]]; then
-          CLUSTER_ID="$DB_CLUSTER_ID"
+        echo "+ Looking for existing cluster “$CLUSTER_NAME”…"
+        CLUSTER_ID=$(doctl databases list --format ID,Name --no-header \
+                      | awk -v n="$CLUSTER_NAME" '$2==n{print $1;exit}')
+
+        if [[ -z "$CLUSTER_ID" ]]; then
+          echo "+ Not found – creating now"
+          # create returns JSON; extract the ID with jq
+          CLUSTER_ID=$(doctl databases create "$CLUSTER_NAME" \
+                         --engine mysql          \
+                         --num-nodes 1           \
+                         --size "$DB_SIZE"       \
+                         --region "$REGION"      \
+                         --version "$ENGINE_VER" \
+                         --format ID             \
+                         --no-header)
+          echo "+ Cluster ID: $CLUSTER_ID"
+
+          echo "+ Waiting until status == online (can be 2-4 min)…"
+          until [[ "$(doctl databases get "$CLUSTER_ID" --format Status --no-header)" == "online" ]]; do
+            sleep 10
+          done
         else
-          CLUSTER_ID=$(doctl databases list --format ID,Name --no-header \
-                        | awk -v n="${DB_CLUSTER_NAME:-axialy-db-cluster}" '$2==n{print $1;exit}')
-          [[ -z "$CLUSTER_ID" ]] && { echo "::error ::Database cluster not found"; exit 1; }
+          echo "+ Found: $CLUSTER_ID"
         fi
 
+        # ----------------------------------------------------------------
+        echo "+ Pulling connection string"
         URI=$(doctl databases connection "$CLUSTER_ID" --format URI --no-header)
 
         host=$(sed -E 's|mysql://[^:]+:[^@]+@([^:]+):([0-9]+)/.*|\1|' <<<"$URI")
@@ -71,25 +87,20 @@ jobs:
 
         echo "::add-mask::$pass"
         {
-          echo "host=$host"
-          echo "port=$port"
-          echo "user=$user"
-          echo "pass=$pass"
-        } >> "$GITHUB_OUTPUT"
+          echo "DB_HOST=$host"
+          echo "DB_PORT=$port"
+          echo "DB_USER=$user"
+          echo "DB_PASS=$pass"
+        } >> "$GITHUB_ENV"
 
-    # ------------------------------------------------------------ #
-    #  Pack the site
-    # ------------------------------------------------------------ #
-    - name: 📦  Create artefact tarball
-      shell: bash
+    # ------------------------------------------------------------------
+    - name: 📦  Make release tarball
       run: |
         set -euo pipefail
         tar --exclude=.git --exclude='.github' -czf site.tar.gz .
 
-    # ------------------------------------------------------------ #
-    #  Upload to the droplet
-    # ------------------------------------------------------------ #
-    - name: 🚚  Copy bundle to droplet
+    # ------------------------------------------------------------------
+    - name: 🚚  Copy code to droplet
       uses: appleboy/scp-action@v0.1.5
       with:
         host:       ${{ env.DROPLET_IP }}
@@ -99,9 +110,7 @@ jobs:
         source:     site.tar.gz
         target:     /tmp/
 
-    # ------------------------------------------------------------ #
-    #  Unpack & hot-reload services
-    # ------------------------------------------------------------ #
+    # ------------------------------------------------------------------
     - name: 🚀  Activate new release
       uses: appleboy/ssh-action@v0.1.6
       with:
@@ -111,16 +120,16 @@ jobs:
         passphrase: ${{ env.DROPLET_SSH_PASSPHRASE }}
         script: |
           set -euo pipefail
-          echo "+ Unpacking site.tar.gz"
+          echo "+ Unpacking site"
           rm -rf /var/www/html.bak || true
           [[ -d /var/www/html ]] && mv /var/www/html /var/www/html.bak
           mkdir -p /var/www/html
           tar -xzf /tmp/site.tar.gz -C /var/www/html
           chown -R www-data:www-data /var/www/html
           rm /tmp/site.tar.gz
-          echo "+ Reloading services"
+          echo "+ Reloading PHP & Nginx"
           (systemctl reload php8.3-fpm || systemctl reload php8.2-fpm || true)
           systemctl reload nginx
-          echo "+ Deployment complete"
+          echo "+ Done.  \o/"
 
-# ======================================================================
+# =======================================================================
