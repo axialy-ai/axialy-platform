@@ -1,0 +1,73 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+
+    env:
+      # DigitalOcean & SSH secrets
+      DIGITALOCEAN_TOKEN:  ${{ secrets.DIGITALOCEAN_TOKEN }}
+      DROPLET_SSH_KEY:     ${{ secrets.DROPLET_SSH_KEY }}
+      DROPLET_SSH_PASSPHRASE: ${{ secrets.DROPLET_SSH_PASSPHRASE }}
+
+      # Pin a *known-good* doctl build
+      DOCTL_VERSION: v1.108.0
+
+    steps:
+      # ────────────────────────────────────────────────────────────────
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      # ────────────────────────────────────────────────────────────────
+      # Install doctl (pinned, no GitHub-API look-ups required)
+      - name: Install doctl
+        run: |
+          set -euo pipefail
+          ver="$DOCTL_VERSION"
+          file_ver="${ver#v}"          # strip the leading “v”
+          echo "Installing doctl $ver …"
+
+          curl -sSfL \
+            "https://github.com/digitalocean/doctl/releases/download/${ver}/doctl-${file_ver}-linux-amd64.tar.gz" \
+            | tar -xz doctl
+          sudo mv doctl /usr/local/bin
+
+          doctl version
+          doctl auth init -t "$DIGITALOCEAN_TOKEN"
+
+      # ────────────────────────────────────────────────────────────────
+      # Grab the DB connection details (now with safety checks)
+      - name: Fetch DB credentials
+        id: db
+        run: |
+          set -euo pipefail
+
+          CID=$(doctl databases list --format ID,Name --no-header \
+                | awk '$2=="axialy-db-cluster"{print $1;exit}')
+
+          if [[ -z "$CID" ]]; then
+            echo "::error ::Database cluster 'axialy-db-cluster' not found"
+            exit 1
+          fi
+
+          uri=$(doctl databases connection "$CID" --format URI --no-header)
+
+          host=$(sed -E 's|mysql://[^:]+:[^@]+@([^:]+):([0-9]+)/.*|\1|' <<<"$uri")
+          port=$(sed -E 's|mysql://[^:]+:[^@]+@([^:]+):([0-9]+)/.*|\2|' <<<"$uri")
+          user=$(sed -E 's|mysql://([^:]+):[^@]+@.*|\1|'                <<<"$uri")
+          pass=$(sed -E 's|mysql://[^:]+:([^@]+)@.*|\1|'                <<<"$uri")
+
+          echo "::add-mask::$pass"
+          {
+            echo "host=$host"
+            echo "port=$port"
+            echo "user=$user"
+            echo "pass=$pass"
+          } >> "$GITHUB_OUTPUT"
+
+      # ────────────────────────────────────────────────────────────────
+      # … your remaining build / scp / ssh steps stay exactly the same …
