@@ -6,26 +6,32 @@ session_start();
 require_once __DIR__ . '/includes/AdminDBConfig.php';
 use Axialy\AdminConfig\AdminDBConfig;
 
-/* ──────────────────────────────────────────────────────────────────────────
- *  0) Defaults injected via GitHub-Actions  (fallback values for dev only)
- * ------------------------------------------------------------------------- */
+/* ------------------------------------------------------------------ */
+/*  0) Defaults injected via GitHub Actions (fallbacks for dev only)  */
+/* ------------------------------------------------------------------ */
 $DEFAULT_ADMIN_USER     = getenv('ADMIN_DEFAULT_USER')     ?: 'caseylide';
-$DEFAULT_ADMIN_PASSWORD = getenv('ADMIN_DEFAULT_PASSWORD') ?: 'Casellio';     // shown in overlay only
+$DEFAULT_ADMIN_PASSWORD = getenv('ADMIN_DEFAULT_PASSWORD') ?: 'Casellio';
 $DEFAULT_ADMIN_EMAIL    = getenv('ADMIN_DEFAULT_EMAIL')    ?: 'caseylide@gmail.com';
 
-/* ──────────────────────────────────────────────────────────────────────────
- *  1) Does the default account already exist?
- * ------------------------------------------------------------------------- */
+/* ------------------------------------------------------------------ */
+/*  1) Ensure DB + tables exist                                       */
+/* ------------------------------------------------------------------ */
 $adminDB = AdminDBConfig::getInstance()->getPdo();
-$stm     = $adminDB->prepare('SELECT COUNT(*) FROM admin_users WHERE username = :u');
+require_once __DIR__ . '/includes/AdminSchema.php';
+\Axialy\AdminBootstrap\ensureAdminSchema($adminDB);
+
+/* ------------------------------------------------------------------ */
+/*  2) Is the default account present?                               */
+/* ------------------------------------------------------------------ */
+$stm = $adminDB->prepare('SELECT COUNT(*) FROM admin_users WHERE username = :u');
 $stm->execute([':u' => $DEFAULT_ADMIN_USER]);
 $defaultExists = (bool) $stm->fetchColumn();
 
-/* ──────────────────────────────────────────────────────────────────────────
- *  2) FIRST VISIT  →  show “initialise admin” overlay
- * ------------------------------------------------------------------------- */
+/* ------------------------------------------------------------------ */
+/*  3) First-run overlay to create the initial admin account          */
+/* ------------------------------------------------------------------ */
 if (!$defaultExists) {
-?>
+    ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -54,7 +60,7 @@ if (!$defaultExists) {
       <p>This is the very first launch – create the initial administrator account.</p>
 
       <input type="password" id="secret"
-             placeholder="Enter admin code (<?php echo htmlspecialchars($DEFAULT_ADMIN_PASSWORD); ?>)">
+             placeholder="Enter admin code (<?= htmlspecialchars($DEFAULT_ADMIN_PASSWORD) ?>)">
       <div>
         <button id="create">Create account</button>
         <button id="exit">Leave</button>
@@ -63,7 +69,7 @@ if (!$defaultExists) {
   </div>
 
 <script>
-const DEF_CODE = <?php echo json_encode($DEFAULT_ADMIN_PASSWORD); ?>;
+const DEF_CODE = <?= json_encode($DEFAULT_ADMIN_PASSWORD) ?>;
 document.getElementById('create').onclick = async () => {
     const val = document.getElementById('secret').value.trim();
     if (!val) return;
@@ -73,11 +79,9 @@ document.getElementById('create').onclick = async () => {
         const r  = await fetch('init_user.php', {method:'POST',body:''});
         const js = await r.json();
         if (js.success) {
-            alert('Administrator account created.\nYou may now log in as "<?php echo addslashes($DEFAULT_ADMIN_USER); ?>".');
+            alert('Administrator account created.\nYou may now log in as "<?= addslashes($DEFAULT_ADMIN_USER) ?>".');
             location.reload();
-        } else {
-            alert('Error: ' + js.message);
-        }
+        } else { alert('Error: ' + js.message); }
     } catch (e) { alert(e); }
 };
 document.getElementById('exit').onclick = () => location.href = 'https://www.axiaba.com';
@@ -88,23 +92,22 @@ document.getElementById('exit').onclick = () => location.href = 'https://www.axi
     exit;
 }
 
-/* ──────────────────────────────────────────────────────────────────────────
- *  3) Normal flow – must be authenticated
- * ------------------------------------------------------------------------- */
+/* ------------------------------------------------------------------ */
+/*  4) Normal authenticated flow                                      */
+/* ------------------------------------------------------------------ */
 require_once __DIR__ . '/includes/admin_auth.php';
 requireAdminAuth();
 
-/* ──────────────────────────────────────────────────────────────────────────
- *  4) Environment selector (UI instance to open in new tab)
- * ------------------------------------------------------------------------- */
+/* ------------------------------------------------------------------ */
+/*  5) Environment selector (UI instance)                             */
+/* ------------------------------------------------------------------ */
 $validEnvs = ['production','clients','beta','test','uat','firstlook','aii'];
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['env_select'])) {
     $choice = $_POST['env_select'];
     if (in_array($choice, $validEnvs, true)) {
         $_SESSION['admin_env'] = $choice;
     }
-    header('Location: index.php');
-    exit;
+    header('Location: index.php'); exit;
 }
 $env = $_SESSION['admin_env'] ?? 'production';
 
@@ -158,16 +161,15 @@ $uiUrl = $uiMap[$env] ?? $uiMap['production'];
     <p>Welcome, Admin. You are logged in.</p>
 
     <div class="env-box">
-      <strong>Current Environment:</strong>
-      <?php echo htmlspecialchars($env, ENT_QUOTES, 'UTF-8'); ?>
+      <strong>Current Environment:</strong> <?= htmlspecialchars($env) ?>
     </div>
 
     <form method="POST">
       <label for="env_select">Switch Environment:</label>
       <select name="env_select" id="env_select">
         <?php foreach ($validEnvs as $v): ?>
-          <option value="<?php echo $v; ?>" <?php if ($v === $env) echo 'selected'; ?>>
-            <?php echo ucfirst($v); ?>
+          <option value="<?= $v ?>" <?= $v === $env ? 'selected' : '' ?>>
+            <?= ucfirst($v) ?>
           </option>
         <?php endforeach; ?>
       </select>
@@ -179,8 +181,8 @@ $uiUrl = $uiMap[$env] ?? $uiMap['production'];
     <div class="link-block"><a class="button" href="/issues_admin.php">Manage Issues</a></div>
     <div class="link-block"><a class="button" href="/db_viewer_admin.php">Open Data Inspector</a></div>
     <div class="link-block">
-      <a class="button" href="<?php echo $uiUrl; ?>" target="_blank" rel="noopener">
-        Open Axialy UI (<?php echo htmlspecialchars($env); ?>) in New Tab
+      <a class="button" href="<?= $uiUrl ?>" target="_blank" rel="noopener">
+        Open Axialy UI (<?= htmlspecialchars($env) ?>) in New Tab
       </a>
     </div>
   </div>
