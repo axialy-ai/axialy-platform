@@ -1,0 +1,72 @@
+# Provisions (or updates) ONLY the infrastructure needed for the
+# Axialy Admin product:
+#   • 1× DigitalOcean MySQL cluster  (Axialy_Admin + Axialy_UI)
+#   • 1× Droplet  admin.axialy.ai
+#
+# Runs on every push to main when anything in /infra or /axialy-admin-product
+# changes, but you can adjust the `paths:` filter as you wish.
+
+name: Provision Admin Infra
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - "infra/**"
+      - "axialy-admin-product/**"
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+
+    # All variables Terraform needs come from repo secrets ⇣
+    env:
+      DIGITALOCEAN_TOKEN:     ${{ secrets.DIGITALOCEAN_TOKEN }}
+      TF_VAR_do_token:        ${{ secrets.DIGITALOCEAN_TOKEN }}
+      TF_VAR_ssh_fingerprint: ${{ secrets.SSH_FINGERPRINT }}
+
+    steps:
+    # ── 1 ─ Checkout repo ────────────────────────────────────────────────
+    - uses: actions/checkout@v4
+
+    # ── 2 ─ Install doctl (used by the import script) ────────────────────
+    - name: Install doctl
+      run: |
+        set -e
+        VER=$(curl -s https://api.github.com/repos/digitalocean/doctl/releases/latest \
+               | grep '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/')
+        curl -sL "https://github.com/digitalocean/doctl/releases/download/v${VER}/doctl-${VER}-linux-amd64.tar.gz" \
+          | tar -xz
+        sudo mv doctl /usr/local/bin
+        doctl auth init -t "$DIGITALOCEAN_TOKEN"
+
+    # ── 3 ─ Install Terraform CLI ───────────────────────────────────────
+    - uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.8.2
+
+    # ── 4 ─ Wipe any old state & import live resources into a fresh one ──
+    - name: Prepare Terraform working directory
+      working-directory: infra
+      run: |
+        rm -f terraform.tfstate*
+        rm -f .terraform.lock.hcl
+        rm -rf .terraform
+
+    - name: Import existing resources (idempotent)
+      working-directory: infra
+      run: bash import_existing.sh
+
+    # ── 5 ─ Terraform init / plan / apply (auto-approve on main) ─────────
+    - name: Terraform init
+      working-directory: infra
+      run: terraform init
+
+    - name: Terraform plan
+      working-directory: infra
+      run: terraform plan -input=false
+
+    - name: Terraform apply
+      if: github.ref == 'refs/heads/main'
+      working-directory: infra
+      run: terraform apply -auto-approve -input=false
