@@ -11,19 +11,16 @@ jobs:
     runs-on: ubuntu-24.04
 
     # -------------------------------------------------------------------
-    #  Secrets that already exist in the repo
-    # -------------------------------------------------------------------
     env:
       DIGITALOCEAN_TOKEN:      ${{ secrets.DIGITALOCEAN_TOKEN }}
       DROPLET_SSH_KEY:         ${{ secrets.DROPLET_SSH_KEY }}
       DROPLET_SSH_PASSPHRASE:  ${{ secrets.DROPLET_SSH_PASSPHRASE }}
       DROPLET_IP:              ${{ secrets.DROPLET_IP }}
 
-      # constants
       CLUSTER_NAME:  axialy-db-cluster
-      REGION:        nyc3              # change if you prefer another region
-      DB_SIZE:       db-s-1vcpu-1gb    # cheapest; tweak as needed
-      ENGINE_VER:    8                 # MySQL 8
+      REGION:        nyc3
+      DB_SIZE:       db-s-1vcpu-1gb
+      ENGINE_VER:    8
       DOCTL_VERSION: v1.108.0
 
     steps:
@@ -57,16 +54,19 @@ jobs:
 
         if [[ -z "$CLUSTER_ID" ]]; then
           echo "+ Not found – creating now"
-          # doctl ≤1.108 doesn’t support --format on ‘create’; use JSON + grep
-          CLUSTER_ID=$(doctl databases create "$CLUSTER_NAME"        \
-                         --engine mysql                              \
-                         --num-nodes 1                               \
-                         --size "$DB_SIZE"                           \
-                         --region "$REGION"                          \
-                         --version "$ENGINE_VER"                     \
-                         --wait -o json                              \
-                       | grep -oP '"id":"\K[^"]+')
-          echo "+ Cluster ID: $CLUSTER_ID (ready)"
+          # create & wait; we throw away stdout/stderr (progress messages)
+          doctl databases create "$CLUSTER_NAME"          \
+                 --engine mysql                           \
+                 --num-nodes 1                            \
+                 --size "$DB_SIZE"                        \
+                 --region "$REGION"                       \
+                 --version "$ENGINE_VER"                  \
+                 --wait > /dev/null
+
+          # now fetch ID from the list we know works
+          CLUSTER_ID=$(doctl databases list --format ID,Name --no-header \
+                        | awk -v n="$CLUSTER_NAME" '$2==n{print $1;exit}')
+          echo "+ Cluster created: $CLUSTER_ID"
         else
           echo "+ Found: $CLUSTER_ID"
         fi
