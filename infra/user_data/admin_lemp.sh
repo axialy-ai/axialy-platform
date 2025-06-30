@@ -1,17 +1,16 @@
-#!/bin/bash
-# cloud-init script – installs a bare-bones LEMP stack for admin.axialy.ai
+#!/usr/bin/env bash
+# ─ Cloud-init: very small LEMP stack for admin.axialy.ai ─
 set -euxo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
 apt-get update -y
 apt-get install -y nginx php-fpm php-mysql
 
-# --- nginx vhost ---------------------------------------------------------
 cat >/etc/nginx/sites-available/admin <<'EOF'
 server {
     listen 80 default_server;
     server_name admin.axialy.ai _;
-    root  /var/www/html;
+    root /var/www/html;
     index index.php index.html;
 
     location / {
@@ -23,7 +22,6 @@ server {
     }
 }
 EOF
-
 ln -sf /etc/nginx/sites-available/admin /etc/nginx/sites-enabled/admin
 rm -f /etc/nginx/sites-enabled/default
 
