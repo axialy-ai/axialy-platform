@@ -1,103 +1,71 @@
-###############################################################################
-# infra/main.tf           ◂─ ONLY FILE UPDATED
-###############################################################################
+terraform {
+  required_providers {
+    digitalocean = {
+      source  = "digitalocean/digitalocean"
+      version = "~> 2.53.0"
+    }
+  }
+}
 
-############################
-# 1 ▸ Managed MySQL cluster
-############################
+provider "digitalocean" {
+  token = var.do_token
+}
+
+# ------------------------------------------------------------------------
+# Axialy project (already exists – import on first run)
+# ------------------------------------------------------------------------
+resource "digitalocean_project" "axialy" {
+  name        = "Axialy Platform"
+  description = "Everything related to Axialy"
+  purpose     = "Web Application"
+  environment = "Production"
+}
+
+# ------------------------------------------------------------------------
+# MySQL cluster (admin + ui databases)
+# ------------------------------------------------------------------------
 resource "digitalocean_database_cluster" "mysql" {
   name       = "axialy-db-cluster"
   engine     = "mysql"
   version    = "8"
-  region     = var.region
   size       = "db-s-1vcpu-1gb"
+  region     = "sfo3"
   node_count = 1
 }
 
 resource "digitalocean_database_db" "admin" {
-  cluster_id = digitalocean_database_cluster.mysql.id
   name       = "Axialy_Admin"
+  cluster_id = digitalocean_database_cluster.mysql.id
 }
 
 resource "digitalocean_database_db" "ui" {
-  cluster_id = digitalocean_database_cluster.mysql.id
   name       = "Axialy_UI"
+  cluster_id = digitalocean_database_cluster.mysql.id
 }
 
-###############################
-# 2 ▸ Admin droplet + cloud-init
-###############################
-locals {
-  admin_cloud_init = <<EOF
-#cloud-config
-package_update: true
-packages:
-  - nginx
-  - php8.1-fpm
-  - php8.1-mysql
-  - php8.1-cli
-  - ufw
-
-write_files:
-  - path: /etc/nginx/sites-available/admin.axialy.ai
-    owner: root:root
-    permissions: "0644"
-    content: |
-      server {
-          listen 80;
-          listen [::]:80;
-          server_name admin.axialy.ai _;
-          root /var/www/html;
-          index index.php index.html;
-          
-          location / {
-              try_files \$uri \$uri/ /index.php?\$args;
-          }
-
-          location ~ \.php$ {
-              include snippets/fastcgi-php.conf;
-              fastcgi_pass unix:/run/php/php8.1-fpm.sock;
-          }
-
-          location ~ /\.(?!well-known) {
-              deny all;
-          }
-      }
-
-runcmd:
-  - [bash, -c, "ln -sf /etc/nginx/sites-available/admin.axialy.ai /etc/nginx/sites-enabled/admin.axialy.ai"]
-  - [bash, -c, "rm -f /etc/nginx/sites-enabled/default"]
-  - [systemctl, enable, --now, php8.1-fpm]
-  - [systemctl, enable, --now, nginx]
-  - [bash, -c, "ufw allow 'Nginx Full' || true"]
-  - [systemctl, reload, nginx]
-EOF
-}
-
+# ------------------------------------------------------------------------
+# Admin droplet – cloud-init installs nginx + PHP
+# ------------------------------------------------------------------------
 resource "digitalocean_droplet" "admin" {
-  name       = "admin.axialy.ai"
-  region     = var.region
-  size       = var.droplet_size
-  image      = "ubuntu-22-04-x64"
-  ssh_keys   = [var.ssh_fingerprint]
-  user_data  = local.admin_cloud_init
-  tags       = ["axialy", "admin"]
+  name              = "admin.axialy.ai"
+  region            = "sfo3"
+  size              = "s-1vcpu-1gb"
+  image             = "ubuntu-22-04-x64"
+  ssh_keys          = [var.ssh_fingerprint]
+  tags              = ["axialy", "admin"]
+  user_data         = file("${path.module}/user_data/admin_lemp.sh")
 }
 
-##################
-# 3 ▸ Helpful outputs
-##################
+# Attach droplet & DB to the project (so they’re grouped in DO console)
+resource "digitalocean_project_resources" "attach" {
+  project   = digitalocean_project.axialy.id
+  resources = [
+    digitalocean_droplet.admin.urn,
+    digitalocean_database_cluster.mysql.urn
+  ]
+}
+
+# Public IP of the admin droplet
 output "admin_ip" {
   value = digitalocean_droplet.admin.ipv4_address
-}
-
-output "admin_db_config" {
-  sensitive = true
-  value = {
-    host     = digitalocean_database_cluster.mysql.host
-    port     = digitalocean_database_cluster.mysql.port
-    user     = digitalocean_database_cluster.mysql.user
-    password = digitalocean_database_cluster.mysql.password
-    name     = digitalocean_database_db.admin.name
-  }
 }
