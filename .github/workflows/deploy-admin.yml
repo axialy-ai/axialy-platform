@@ -4,7 +4,11 @@ name: Deploy Admin
 on:
   push:
     branches: [ "main" ]
-    paths:    [ "axialy-admin-product/**" ]
+    paths:
+      - "axialy-admin-product/**"          # product code
+      - ".github/workflows/deploy-admin.yml"  # <-- add this line
+  workflow_dispatch:                        # <-- and this block (optional)
+
 
 jobs:
   deploy:
