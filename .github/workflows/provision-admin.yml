@@ -1,8 +1,6 @@
-# .github/workflows/provision-admin.yml
 name: Provision Admin Infra
 
 on:
-  workflow_dispatch:
   push:
     branches: [ "main" ]
     paths:
@@ -19,44 +17,12 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    # ---------- doctl (fixed: pin to current stable) -----------------------
-    - name: Install doctl v1.131.0
-      run: |
-        curl -sSfL \
-          https://github.com/digitalocean/doctl/releases/download/v1.131.0/doctl-1.131.0-linux-amd64.tar.gz \
-          | tar -xz doctl
-        sudo mv doctl /usr/local/bin
-        doctl auth init -t "$DIGITALOCEAN_TOKEN"
-
-    # ---------- Terraform CLI ---------------------------------------------
     - uses: hashicorp/setup-terraform@v3
       with:
         terraform_version: 1.8.2
 
-    # ---------- Fresh working dir & initial provider download -------------
-    - name: Init provider (offline)
+    - name: Terraform init / plan / apply
       working-directory: infra
       run: |
-        rm -f terraform.tfstate* .terraform.lock.hcl
-        rm -rf .terraform
-        terraform init -backend=false -input=false
-
-    # ---------- Import any pre-existing resources -------------------------
-    - name: Import existing DO resources
-      working-directory: infra
-      run: |
-        bash import_existing.sh
-
-    # ---------- Normal plan & apply ---------------------------------------
-    - name: Terraform init (remote state)
-      working-directory: infra
-      run: terraform init -input=false
-
-    - name: Terraform plan
-      working-directory: infra
-      run: terraform plan -input=false
-
-    - name: Terraform apply
-      if: github.ref == 'refs/heads/main'
-      working-directory: infra
-      run: terraform apply -auto-approve -input=false
+        terraform init -input=false
+        terraform apply -auto-approve -input=false
