@@ -1,0 +1,19 @@
+---
+- name: Install certbot
+  apt:
+    name: certbot
+    state: present
+  when: ansible_os_family == "Debian"
+
+- name: Obtain certificate
+  command: >
+    certbot certonly --noninteractive --standalone
+    --agree-tos --email "{{ lookup('env','ADMIN_DEFAULT_EMAIL') }}"
+    -d "{{ domain }}"
+  args:
+    creates: "/etc/letsencrypt/live/{{ domain }}/fullchain.pem"
+
+- name: Reload nginx after certificate
+  service:
+    name: docker
+    state: restarted
