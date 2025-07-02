@@ -1,1 +1,9 @@
+# .dockerignore
+.git
+.github
+infra
+scripts
+tests
+.idea
+*.md
 
