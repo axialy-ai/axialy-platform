@@ -6,10 +6,12 @@ services:
     image: ghcr.io/axiamax/axialy-admin-php:${GITHUB_SHA:-latest}
     restart: unless-stopped
     environment:
-      # → secrets are injected by Ansible (.env file) for runtime values
       APP_ENV: "production"
     volumes:
+      # product source (read-only)
       - ../admin-app:/var/www/html:ro
+      # env-file mapped to where AdminDBConfig expects it
+      - /opt/axialy/.env:/home/i17z4s936h3j/private_axialy/.env.admin:ro
     networks: [ web ]
 
   nginx:
@@ -18,10 +20,10 @@ services:
     ports:
       - "80:80"
       - "443:443"
+    depends_on: [ php ]
     volumes:
       - ../admin-app:/var/www/html:ro
       - /etc/letsencrypt:/etc/letsencrypt:ro
-    depends_on: [ php ]
     networks: [ web ]
 
 networks:
