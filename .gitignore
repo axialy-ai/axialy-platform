@@ -1,0 +1,21 @@
+# .gitignore
+# ------------------------------------------------------------------
+# Generic
+.DS_Store
+.env*
+*.log
+*.tgz
+*.zip
+*.tar
+*.tar.gz
+node_modules/
+vendor/
+
+# Docker
+docker/php/vendor
+docker/php/composer.phar
+
+# Terraform & Ansible artefacts
+infra/terraform/.terraform
+infra/terraform/terraform.tfstate*
+infra/ansible/.ansible
