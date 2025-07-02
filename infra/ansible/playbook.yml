@@ -1,6 +1,57 @@
 ---
-- name: Configure Axialy-Admin droplet
-  hosts: all
-  become: true
-  roles:
-    - docker
+- hosts: all
+  become: yes
+  vars:
+    php_image:      "{{ lookup('env','PHP_IMAGE') }}"
+    admin_user:     "{{ lookup('env','ADMIN_DEFAULT_USER') }}"
+    admin_pass:     "{{ lookup('env','ADMIN_DEFAULT_PASSWORD') }}"
+    admin_email:    "{{ lookup('env','ADMIN_DEFAULT_EMAIL') }}"
+    db_host:        "{{ lookup('env','DB_HOST') | default(lookup('env','DB_HOST')) }}"
+    db_port:        "{{ lookup('env','DB_PORT') }}"
+    db_username:    "{{ lookup('env','DB_USERNAME') }}"
+    db_password:    "{{ lookup('env','DB_PASSWORD') }}"
+    env_path:       "/opt/axialy/.env"
+    compose_dir:    "/opt/axialy"
+
+  tasks:
+    - name: Install docker & docker-compose
+      ansible.builtin.shell: |
+        curl -fsSL https://get.docker.com | sh
+        usermod -aG docker $SUDO_USER || true
+        curl -L https://github.com/docker/compose/releases/download/v2.27.0/docker-compose-linux-x86_64 -o /usr/local/bin/docker-compose
+        chmod +x /usr/local/bin/docker-compose
+      args:
+        warn: false
+
+    - name: Ensure compose directory exists
+      ansible.builtin.file:
+        path: "{{ compose_dir }}"
+        state: directory
+        mode: 0755
+
+    - name: Write application .env file (read-only in container)
+      ansible.builtin.copy:
+        dest: "{{ env_path }}"
+        mode: '0600'
+        content: |
+          # Axialy Admin runtime variables
+          DB_HOST={{ db_host }}
+          DB_PORT={{ db_port }}
+          DB_NAME=Axialy_ADMIN
+          DB_USER={{ db_username }}
+          DB_PASSWORD={{ db_password }}
+          ADMIN_DEFAULT_USER={{ admin_user }}
+          ADMIN_DEFAULT_PASSWORD={{ admin_pass }}
+          ADMIN_DEFAULT_EMAIL={{ admin_email }}
+
+    - name: Copy docker-compose bundle
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../docker"
+        dest: "{{ compose_dir }}"
+        mode: recursive
+
+    - name: Start the stack
+      community.docker.docker_compose:
+        project_src: "{{ compose_dir }}"
+        build: false
+        state: present
