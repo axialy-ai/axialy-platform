@@ -2,17 +2,16 @@ name: CI
 
 on:
   pull_request:
-  push:
-#    branches: [ main ]
-  workflow_dispatch:   # ← add this block
-
+  workflow_dispatch:        # manual run from the “Actions” tab
 
 jobs:
   php-lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: PHP lint
         run: |
-          find admin-app -type f -name '*.php' -print0 \
+          # lint every PHP file in the product folder
+          find axialy-admin-product -type f -name '*.php' -print0 \
             | xargs -0 -n1 -P4 php -l
