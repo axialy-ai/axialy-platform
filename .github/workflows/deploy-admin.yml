@@ -1,17 +1,15 @@
 name: Deploy Axialy-Admin
 
 on:
-  workflow_dispatch:          # run manually from the UI
-  push:                       # still possible to re-enable later
-#    branches: [ main ]
+  workflow_dispatch:        # shows the “Run workflow” button
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: axiamax/axialy-admin-php
 
-# ──────────────────────────────────────────────────────────────
-#  JOB 1 – Build and publish the PHP image to GHCR
-# ──────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# Job 1 – build & push the PHP image
+# ─────────────────────────────────────────────────────────────
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -30,9 +28,9 @@ jobs:
           docker build -t $REGISTRY/$IMAGE_NAME:latest -f docker/php/Dockerfile .
           docker push $REGISTRY/$IMAGE_NAME:latest
 
-# ──────────────────────────────────────────────────────────────
-#  JOB 2 – Provision infrastructure & configure the droplet
-# ──────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# Job 2 – provision infra & configure droplet
+# ─────────────────────────────────────────────────────────────
   provision:
     needs: build
     runs-on: ubuntu-latest
@@ -42,19 +40,16 @@ jobs:
         working-directory: infra/terraform
 
     env:
-      DIGITALOCEAN_TOKEN:         ${{ secrets.DIGITALOCEAN_TOKEN }}
-      TF_VAR_do_token:            ${{ secrets.DIGITALOCEAN_TOKEN }}
-      TF_VAR_ssh_pub_key:         ${{ secrets.DROPLET_SSH_KEY }}
-      TF_VAR_namesilo_api_key:    ${{ secrets.NAMESILO_API_KEY }}
-      TF_VAR_domain_name:         ${{ secrets.NAMESILO_DOMAIN }}
+      DIGITALOCEAN_TOKEN:      ${{ secrets.DIGITALOCEAN_TOKEN }}
+      TF_VAR_do_token:         ${{ secrets.DIGITALOCEAN_TOKEN }}
+      TF_VAR_ssh_pub_key:      ${{ secrets.DROPLET_SSH_KEY }}
+      TF_VAR_namesilo_api_key: ${{ secrets.NAMESILO_API_KEY }}
+      TF_VAR_domain_name:      ${{ secrets.NAMESILO_DOMAIN }}
 
     steps:
       - uses: actions/checkout@v4
 
-      # ────────────────────────────────────────────────────────
-      # 1. Detect an existing DB cluster called “axialy-cluster”
-      #    (nothing to import ➜ var will be empty)
-      # ────────────────────────────────────────────────────────
+      # ── 1 Detect an existing DB cluster ─────────────────────
       - name: Detect existing DigitalOcean DB cluster
         id: detect
         shell: bash
@@ -65,12 +60,9 @@ jobs:
 
           CLUSTER_ID=$(doctl databases list --output json | \
             jq -r '.[] | select(.name=="axialy-cluster") | .id // empty')
-
           echo "found_id=$CLUSTER_ID" >> "$GITHUB_OUTPUT"
 
-      # ────────────────────────────────────────────────────────
-      # 2. Terraform – import if found, otherwise create
-      # ────────────────────────────────────────────────────────
+      # ── 2 Terraform init / (optional) import / apply ────────
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
         with:
@@ -84,31 +76,25 @@ jobs:
         shell: bash
         run: |
           CID='${{ steps.detect.outputs.found_id }}'
-          terraform import -input=false \
-            'digitalocean_database_cluster.axialy' "$CID" || true
-
-          # import the two DBs if they already exist
-          terraform import -input=false \
-            'digitalocean_database_db.ui'    "${CID}:axialy_ui"    || true
-          terraform import -input=false \
-            'digitalocean_database_db.admin' "${CID}:axialy_admin" || true
+          terraform import -input=false 'digitalocean_database_cluster.axialy' "$CID" || true
+          terraform import -input=false 'digitalocean_database_db.ui'    "${CID}:axialy_ui"    || true
+          terraform import -input=false 'digitalocean_database_db.admin' "${CID}:axialy_admin" || true
+          terraform import -input=false 'digitalocean_database_user.admin' "${CID}:axialy_admin" || true
 
       - name: Terraform apply
         run: terraform apply -auto-approve -input=false
 
-      # ────────────────────────────────────────────────────────
-      # 3. Expose outputs for the Ansible step
-      # ────────────────────────────────────────────────────────
+      # ── 3 Expose outputs for Ansible ─────────────────────────
       - name: Capture output values
         id: tfout
         run: |
-          echo "ip=$(terraform output -raw droplet_ip)"     >> "$GITHUB_OUTPUT"
-          echo "db_host=$(terraform output -raw db_host)"   >> "$GITHUB_OUTPUT"
-          echo "db_port=$(terraform output -raw db_port)"   >> "$GITHUB_OUTPUT"
+          echo "ip=$(terraform output -raw droplet_ip)"           >> "$GITHUB_OUTPUT"
+          echo "db_host=$(terraform output -raw db_host)"         >> "$GITHUB_OUTPUT"
+          echo "db_port=$(terraform output -raw db_port)"         >> "$GITHUB_OUTPUT"
+          echo "db_username=$(terraform output -raw db_username)" >> "$GITHUB_OUTPUT"
+          echo "db_password=$(terraform output -raw db_password)" >> "$GITHUB_OUTPUT"
 
-      # ────────────────────────────────────────────────────────
-      # 4. Configure the droplet (Docker stack, SSL, env-file …)
-      # ────────────────────────────────────────────────────────
+      # ── 4 Configure droplet via Ansible ──────────────────────
       - name: Ansible provision
         uses: dawidd6/action-ansible-playbook@v2
         with:
@@ -126,3 +112,5 @@ jobs:
             NAMESILO_DOMAIN:         ${{ secrets.NAMESILO_DOMAIN }}
             db_host:                 ${{ steps.tfout.outputs.db_host }}
             db_port:                 ${{ steps.tfout.outputs.db_port }}
+            db_username:             ${{ steps.tfout.outputs.db_username }}
+            db_password:             ${{ steps.tfout.outputs.db_password }}
