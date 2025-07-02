@@ -1,7 +1,7 @@
 name: Deploy Axialy Admin
 
 on:
-  workflow_dispatch:         # manual trigger only
+  workflow_dispatch:          # manual trigger only
 
 env:
   REGISTRY: ghcr.io
@@ -44,7 +44,7 @@ jobs:
     env:
       DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
       TF_VAR_do_token:    ${{ secrets.DIGITALOCEAN_TOKEN }}
-      TF_VAR_pub_key:     ${{ secrets.DROPLET_SSH_KEY }}
+      TF_VAR_ssh_pub_key: ${{ secrets.DROPLET_SSH_KEY }}   # ← renamed
       TF_VAR_region:      "nyc3"
 
     steps:
@@ -79,6 +79,10 @@ jobs:
             'digitalocean_database_db.ui'    "${CID}:axialy_ui"    || true
           terraform import -allow-missing-config -input=false \
             'digitalocean_database_db.admin' "${CID}:axialy_admin" || true
+          terraform import -allow-missing-config -input=false \
+            'digitalocean_database_user.admin_user' "${CID}:axialy_admin_user" || true
+          terraform import -allow-missing-config -input=false \
+            'digitalocean_database_user.ui_user'    "${CID}:axialy_ui_user"    || true
 
       - name: Terraform apply
         run: terraform apply -auto-approve -input=false
@@ -90,11 +94,10 @@ jobs:
         run: |
           for var in droplet_ip db_host db_port db_username db_password ; do
             val=$(terraform output -raw $var)
-            echo "::add-mask::$val"      # hide in log
+            echo "::add-mask::$val"
             echo "$var=$val" >> $GITHUB_OUTPUT
           done
 
-    # 👇 make the outputs visible to subsequent jobs
     outputs:
       droplet_ip:  ${{ steps.tfout.outputs.droplet_ip }}
       db_host:     ${{ steps.tfout.outputs.db_host }}
