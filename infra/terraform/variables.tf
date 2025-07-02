@@ -1,7 +1,16 @@
-variable "do_token"  { type = string }
-variable "pub_key"   { type = string }          # SSH key for droplet
-variable "region"    { type = string }
+variable "do_token" {
+  description = "DigitalOcean API token"
+  type        = string
+  sensitive   = true
+}
 
-# droplet size & image – adjust if needed
-variable "droplet_size"  { default = "s-1vcpu-1gb" }
-variable "droplet_image" { default = "docker-20-04" }
+variable "ssh_pub_key" {
+  description = "Public-key string used to log in to the droplet"
+  type        = string
+}
+
+variable "region" {
+  description = "DO region"
+  type        = string
+  default     = "nyc3"
+}
