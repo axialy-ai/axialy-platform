@@ -2,9 +2,5 @@
 - name: Configure Axialy-Admin droplet
   hosts: all
   become: true
-  vars:
-    php_image: "ghcr.io/axiamax/axialy-admin-php:latest"
-    domain: "{{ lookup('env', 'NAMESILO_DOMAIN') }}"
   roles:
     - docker
-    - letsencrypt
