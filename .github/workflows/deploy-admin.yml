@@ -1,0 +1,77 @@
+name: Deploy Axialy-Admin
+
+on:
+  push:
+    branches: [ main ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: axiamax/axialy-admin-php
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push image
+        run: |
+          docker build -t $REGISTRY/$IMAGE_NAME:latest -f docker/php/Dockerfile .
+          docker push $REGISTRY/$IMAGE_NAME:latest
+
+  provision:
+    needs: build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/terraform
+    env:
+      DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+      TF_VAR_do_token: ${{ secrets.DIGITALOCEAN_TOKEN }}
+      TF_VAR_ssh_pub_key: ${{ secrets.DROPLET_SSH_KEY }}
+      TF_VAR_namesilo_api_key: ${{ secrets.NAMESILO_API_KEY }}
+      TF_VAR_domain_name: ${{ secrets.NAMESILO_DOMAIN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_wrapper: false
+
+      - name: Terraform Init & Apply
+        run: |
+          terraform init -input=false
+          terraform apply -auto-approve -input=false
+
+      - name: Save droplet IP for Ansible
+        id: tfout
+        run: |
+          echo "ip=$(terraform output -raw droplet_ip)" >> $GITHUB_OUTPUT
+          echo "db_host=$(terraform output -raw db_host)" >> $GITHUB_OUTPUT
+          echo "db_port=$(terraform output -raw db_port)" >> $GITHUB_OUTPUT
+
+      - name: Ansible provision
+        uses: dawidd6/action-ansible-playbook@v2
+        with:
+          playbook: infra/ansible/playbook.yml
+          inventory: |
+            [all]
+            ${ { steps.tfout.outputs.ip } }
+          options: |
+            --private-key ${{ secrets.DROPLET_SSH_KEY }}
+            --user root
+          env:
+            ADMIN_DEFAULT_USER: ${{ secrets.ADMIN_DEFAULT_USER }}
+            ADMIN_DEFAULT_PASSWORD: ${{ secrets.ADMIN_DEFAULT_PASSWORD }}
+            ADMIN_DEFAULT_EMAIL: ${{ secrets.ADMIN_DEFAULT_EMAIL }}
+            NAMESILO_DOMAIN: ${{ secrets.NAMESILO_DOMAIN }}
+            db_host: ${{ steps.tfout.outputs.db_host }}
+            db_port: ${{ steps.tfout.outputs.db_port }}
