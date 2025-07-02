@@ -1,39 +1,26 @@
-# ─── SSH key ────────────────────────────────────────────────────
-resource "digitalocean_ssh_key" "admin" {
-  name       = var.ssh_key_name
-  public_key = var.ssh_pub_key
+terraform {
+  required_providers {
+    digitalocean = { source = "digitalocean/digitalocean" }
+    random       = { source = "hashicorp/random" }
+  }
 }
 
-# ─── Droplet ────────────────────────────────────────────────────
-resource "digitalocean_droplet" "admin" {
-  name       = "axialy-admin"
-  region     = var.droplet_region
-  size       = var.droplet_size
-  image      = var.droplet_image
-  ssh_keys   = [digitalocean_ssh_key.admin.fingerprint]
-  monitoring = true
-  ipv6       = true
-  tags       = ["axialy-admin"]
+provider "digitalocean" {
+  token = var.do_token
 }
 
-# ─── Simple firewall ───────────────────────────────────────────
-resource "digitalocean_firewall" "admin" {
-  name        = "axialy-admin-fw"
-  droplet_ids = [digitalocean_droplet.admin.id]
-
-  inbound_rule { protocol = "tcp" port_range = "22"  source_addresses = ["0.0.0.0/0", "::/0"] }
-  inbound_rule { protocol = "tcp" port_range = "80"  source_addresses = ["0.0.0.0/0", "::/0"] }
-  inbound_rule { protocol = "tcp" port_range = "443" source_addresses = ["0.0.0.0/0", "::/0"] }
-
-  outbound_rule { protocol = "tcp" port_range = "all" destination_addresses = ["0.0.0.0/0", "::/0"] }
+# ─────────────────────────────  SSH Key  ──────────────────────────────────────
+resource "digitalocean_ssh_key" "deployer" {
+  name       = "axialy-deployer"
+  public_key = var.pub_key
 }
 
-# ─── Managed MySQL cluster & DBs ───────────────────────────────
+# ─────────────────────────────  DB Cluster  ───────────────────────────────────
 resource "digitalocean_database_cluster" "axialy" {
   name       = "axialy-cluster"
   engine     = "mysql"
-  version    = var.mysql_version
-  region     = var.droplet_region
+  version    = "8"
+  region     = var.region
   size       = "db-s-1vcpu-1gb"
   node_count = 1
 }
@@ -48,21 +35,36 @@ resource "digitalocean_database_db" "admin" {
   name       = "axialy_admin"
 }
 
-# ─── App-specific DB user (credentials are auto-generated) ─────
-resource "digitalocean_database_user" "admin" {
+# Always create a **new** service user each run so we have the password.
+resource "random_password" "svc_pass" {
+  length  = 24
+  special = false
+}
+
+resource "digitalocean_database_user" "svc" {
   cluster_id = digitalocean_database_cluster.axialy.id
-  name       = "axialy_admin"
+  name       = "axialy_platform_${terraform.workspace}"
+  mysql_auth_plugin = "mysql_native_password"
+  password   = random_password.svc_pass.result
 }
 
-# ─── DNS – NameSilo root A record ───────────────────────────────
-data "digitalocean_droplet" "ip" {
-  id = digitalocean_droplet.admin.id
+# ─────────────────────────────  Droplet  ──────────────────────────────────────
+resource "digitalocean_droplet" "admin" {
+  name              = "axialy-admin"
+  region            = var.region
+  size              = var.droplet_size
+  image             = var.droplet_image
+  ssh_keys          = [digitalocean_ssh_key.deployer.fingerprint]
+  monitoring        = true
+  user_data         = "#cloud-config\nruncmd:\n  - apt-get update\n  - apt-get install -y docker.io"
 }
 
-resource "namesilo_dns_record" "admin_root" {
-  domain = var.domain_name
-  host   = "@"
-  value  = data.digitalocean_droplet.ip.ipv4_address
-  type   = "A"
-  ttl    = 3600
+# ─────────────────────────────  Outputs  ──────────────────────────────────────
+output "droplet_ip"   { value = digitalocean_droplet.admin.ipv4_address }
+output "db_host"      { value = digitalocean_database_cluster.axialy.host }
+output "db_port"      { value = digitalocean_database_cluster.axialy.port }
+output "db_username"  { value = digitalocean_database_user.svc.name }
+output "db_password"  {
+  value     = digitalocean_database_user.svc.password
+  sensitive = true
 }
