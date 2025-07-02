@@ -1,5 +1,5 @@
 ---
-- name: Install docker + compose plugin
+- name: Install Docker + compose plugin
   apt:
     name:
       - docker.io
@@ -7,13 +7,13 @@
     state: present
   when: ansible_os_family == "Debian"
 
-- name: Ensure docker service running
+- name: Ensure Docker service running
   service:
     name: docker
     state: started
     enabled: yes
 
-- name: Create working dir
+- name: Create working directory
   file:
     path: /opt/axialy
     state: directory
@@ -27,10 +27,13 @@
 - name: Create env-file with secrets
   copy:
     dest: /opt/axialy/.env
-    mode: '0600'
+    mode: "0600"
     content: |
       DB_HOST={{ lookup('vars', 'db_host') | default('') }}
       DB_PORT={{ lookup('vars', 'db_port') | default('3306') }}
+      DB_USER={{ lookup('vars', 'db_username') | default('axialy_admin') }}
+      DB_PASSWORD={{ lookup('vars', 'db_password') | default('') }}
+
       ADMIN_DEFAULT_USER={{ lookup('env', 'ADMIN_DEFAULT_USER') }}
       ADMIN_DEFAULT_PASSWORD={{ lookup('env', 'ADMIN_DEFAULT_PASSWORD') }}
       ADMIN_DEFAULT_EMAIL={{ lookup('env', 'ADMIN_DEFAULT_EMAIL') }}
@@ -38,3 +41,4 @@
 - name: Pull & start services
   community.docker.docker_compose_v2:
     project_src: /opt/axialy
+    state: present
