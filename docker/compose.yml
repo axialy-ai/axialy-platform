@@ -2,27 +2,23 @@ version: "3.9"
 
 services:
   php:
-    build: ./php
-    image: ghcr.io/axiamax/axialy-admin-php:${GITHUB_SHA:-latest}
+    image: ${PHP_IMAGE:-ghcr.io/axiamax/axialy-admin-php:latest}
     restart: unless-stopped
     environment:
       APP_ENV: "production"
     volumes:
-      # product source (read-only)
-      - ../admin-app:/var/www/html:ro
-      # env-file mapped to where AdminDBConfig expects it
+      # env-file where AdminDBConfig expects it
       - /opt/axialy/.env:/home/i17z4s936h3j/private_axialy/.env.admin:ro
     networks: [ web ]
 
   nginx:
     build: ./nginx
     restart: unless-stopped
+    depends_on: [ php ]
     ports:
       - "80:80"
       - "443:443"
-    depends_on: [ php ]
     volumes:
-      - ../admin-app:/var/www/html:ro
       - /etc/letsencrypt:/etc/letsencrypt:ro
     networks: [ web ]
 
