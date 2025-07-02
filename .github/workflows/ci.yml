@@ -1,0 +1,16 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+
+jobs:
+  php-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: PHP lint
+        run: |
+          find admin-app -type f -name '*.php' -print0 \
+            | xargs -0 -n1 -P4 php -l
