@@ -2,7 +2,7 @@ name: Deploy Axialy-Admin
 
 on:
   push:
-    branches: [ main ]
+#    branches: [ main ]
   workflow_dispatch:   # ← add this block
 
 
