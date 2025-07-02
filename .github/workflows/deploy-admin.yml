@@ -3,6 +3,8 @@ name: Deploy Axialy-Admin
 on:
   push:
     branches: [ main ]
+  workflow_dispatch:   # ← add this block
+
 
 env:
   REGISTRY: ghcr.io
