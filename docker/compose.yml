@@ -1,9 +1,27 @@
+version: "3.9"
+
 services:
   php:
     image: ${PHP_IMAGE:-ghcr.io/axiamax/axialy-admin-php:latest}
     restart: unless-stopped
-    environment:
-      APP_ENV: "production"
+    env_file:
+      - /opt/axialy/.env          # written by Ansible
     volumes:
-      - /opt/axialy/.env:/home/i17z4s936h3j/private_axialy/.env.admin:ro
+      - ../axialy-admin-product:/var/www/html:ro
     networks: [ web ]
+
+  nginx:
+    build: ./nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ../axialy-admin-product:/var/www/html:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    depends_on: [ php ]
+    networks: [ web ]
+
+networks:
+  web:
+    driver: bridge
