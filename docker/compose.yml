@@ -1,0 +1,29 @@
+version: "3.9"
+
+services:
+  php:
+    build: ./php
+    image: ghcr.io/axiamax/axialy-admin-php:${GITHUB_SHA:-latest}
+    restart: unless-stopped
+    environment:
+      # → secrets are injected by Ansible (.env file) for runtime values
+      APP_ENV: "production"
+    volumes:
+      - ../admin-app:/var/www/html:ro
+    networks: [ web ]
+
+  nginx:
+    build: ./nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ../admin-app:/var/www/html:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    depends_on: [ php ]
+    networks: [ web ]
+
+networks:
+  web:
+    driver: bridge
