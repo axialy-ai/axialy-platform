@@ -1,44 +1,58 @@
 ---
-- name: Install Docker + compose plugin
+- name: Install Docker & Compose v2
   apt:
     name:
       - docker.io
       - docker-compose-plugin
     state: present
-  when: ansible_os_family == "Debian"
+    update_cache: yes
 
-- name: Ensure Docker service running
+- name: Enable & start Docker
   service:
     name: docker
+    enabled: true
     state: started
-    enabled: yes
 
-- name: Create working directory
+- name: Create Axialy directory tree
   file:
-    path: /opt/axialy
+    path: "{{ item }}"
     state: directory
+    owner: root
+    mode: "0755"
+  loop:
+    - /opt/axialy
+    - /opt/axialy/stack
 
-- name: Copy docker-compose stack
+- name: Copy docker-compose bundle
   copy:
-    src: "{{ playbook_dir }}/../../docker/compose.yml"
-    dest: /opt/axialy/docker-compose.yml
-    mode: 0644
+    src: "{{ playbook_dir }}/../../../../docker/"   # repo → remote
+    dest: /opt/axialy/stack
+    owner: root
+    mode: "0644"
 
-- name: Create env-file with secrets
+- name: Write environment file for PHP
   copy:
     dest: /opt/axialy/.env
+    owner: root
     mode: "0600"
     content: |
-      DB_HOST={{ lookup('vars', 'db_host') | default('') }}
-      DB_PORT={{ lookup('vars', 'db_port') | default('3306') }}
-      DB_USER={{ lookup('vars', 'db_username') | default('axialy_admin') }}
-      DB_PASSWORD={{ lookup('vars', 'db_password') | default('') }}
+      DB_HOST={{ lookup('env','DB_HOST') }}
+      DB_PORT={{ lookup('env','DB_PORT') }}
+      DB_NAME=axialy_admin
+      DB_USER={{ lookup('env','DB_USER') }}
+      DB_PASSWORD={{ lookup('env','DB_PASS') }}
 
-      ADMIN_DEFAULT_USER={{ lookup('env', 'ADMIN_DEFAULT_USER') }}
-      ADMIN_DEFAULT_PASSWORD={{ lookup('env', 'ADMIN_DEFAULT_PASSWORD') }}
-      ADMIN_DEFAULT_EMAIL={{ lookup('env', 'ADMIN_DEFAULT_EMAIL') }}
+      UI_DB_NAME=axialy_ui
+      UI_DB_USER={{ lookup('env','DB_USER') }}
+      UI_DB_PASSWORD={{ lookup('env','DB_PASS') }}
 
-- name: Pull & start services
-  community.docker.docker_compose_v2:
-    project_src: /opt/axialy
+      ADMIN_DEFAULT_USER={{ lookup('env','ADMIN_DEFAULT_USER') }}
+      ADMIN_DEFAULT_PASSWORD={{ lookup('env','ADMIN_DEFAULT_PASSWORD') }}
+      ADMIN_DEFAULT_EMAIL={{ lookup('env','ADMIN_DEFAULT_EMAIL') }}
+
+- name: Launch/upgrade containers
+  community.docker.docker_compose:
+    project_src: /opt/axialy/stack
+    pull: true
+    build: false
     state: present
