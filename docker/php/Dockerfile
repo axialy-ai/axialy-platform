@@ -1,15 +1,16 @@
 # ──────────────────────────────────────────────────────────────────────────────
-# PHP-FPM image for Axialy Admin (source mounted at runtime, so no COPY here)
+# PHP-FPM image for Axialy Admin
+#   • Keeps the image small and stateless – source code is bind-mounted
 # ──────────────────────────────────────────────────────────────────────────────
 FROM php:8.3-fpm-alpine
 
-# Required PHP extensions
+# ── Required PHP extensions ───────────────────────────────────────────────────
 RUN apk add --no-cache \
       mysql-client \
       libzip-dev \
     && docker-php-ext-install pdo pdo_mysql zip
 
-# Create document root (empty – code will be bind-mounted)
+# ── Empty document root (code mounted by docker-compose) ──────────────────────
 RUN mkdir -p /var/www/html \
     && chown -R www-data:www-data /var/www/html
 
