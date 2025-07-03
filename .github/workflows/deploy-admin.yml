@@ -5,7 +5,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: axiamax/axialy-admin-php   # ghcr.io/axiamax/axialy-admin-php:latest
+  IMAGE_NAME: axiamax/axialy-admin-php   # <registry>/<owner>/<repo>:tag
 
 ###############################################################################
 # ─────────────────────────── Job 1 – Build & Push ────────────────────────────
@@ -44,13 +44,13 @@ jobs:
     env:
       DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
       TF_VAR_do_token:    ${{ secrets.DIGITALOCEAN_TOKEN }}
-      TF_VAR_ssh_pub_key: ${{ secrets.DROPLET_SSH_KEY }}   # ← renamed
+      TF_VAR_ssh_pub_key: ${{ secrets.DROPLET_SSH_KEY }}
       TF_VAR_region:      "nyc3"
 
     steps:
       - uses: actions/checkout@v4
 
-      # 1️⃣  Detect an existing DB cluster (optional import)
+      # 1️⃣  Detect existing DB cluster (optional)
       - name: Detect existing DB cluster
         id: detect
         shell: bash
@@ -70,15 +70,23 @@ jobs:
       - name: Terraform init
         run: terraform init -input=false
 
+      # ── Import if the cluster already exists ───────────────────────────────
       - name: Import existing cluster (if found)
         if: steps.detect.outputs.cluster_id != ''
         run: |
           CID='${{ steps.detect.outputs.cluster_id }}'
-          terraform import -input=false 'digitalocean_database_cluster.axialy' "$CID" || true
+
+          # Cluster itself
+          terraform import -input=false \
+            'digitalocean_database_cluster.axialy' "$CID" || true
+
+          # Databases (mixed-case names)
           terraform import -allow-missing-config -input=false \
-            'digitalocean_database_db.ui'    "${CID}:axialy_ui"    || true
+            'digitalocean_database_db.ui'    "${CID}:Axialy_UI"    || true
           terraform import -allow-missing-config -input=false \
-            'digitalocean_database_db.admin' "${CID}:axialy_admin" || true
+            'digitalocean_database_db.admin' "${CID}:Axialy_ADMIN" || true
+
+          # Users
           terraform import -allow-missing-config -input=false \
             'digitalocean_database_user.admin_user' "${CID}:axialy_admin_user" || true
           terraform import -allow-missing-config -input=false \
@@ -87,7 +95,7 @@ jobs:
       - name: Terraform apply
         run: terraform apply -auto-approve -input=false
 
-      # 3️⃣  Expose outputs to downstream jobs
+      # 3️⃣  Expose outputs to downstream job
       - name: Capture outputs
         id: tfout
         shell: bash
