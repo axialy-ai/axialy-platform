@@ -76,17 +76,14 @@ jobs:
         run: |
           CID='${{ steps.detect.outputs.cluster_id }}'
 
-          # Cluster itself
           terraform import -input=false \
             'digitalocean_database_cluster.axialy' "$CID" || true
 
-          # Databases (mixed-case names)
           terraform import -allow-missing-config -input=false \
             'digitalocean_database_db.ui'    "${CID}:Axialy_UI"    || true
           terraform import -allow-missing-config -input=false \
             'digitalocean_database_db.admin' "${CID}:Axialy_ADMIN" || true
 
-          # Users
           terraform import -allow-missing-config -input=false \
             'digitalocean_database_user.admin_user' "${CID}:axialy_admin_user" || true
           terraform import -allow-missing-config -input=false \
@@ -132,12 +129,12 @@ jobs:
           options: |
             --private-key ${{ secrets.DROPLET_SSH_KEY }}
             --user root
-          env:
-            PHP_IMAGE:              ghcr.io/${{ env.IMAGE_NAME }}:latest
-            ADMIN_DEFAULT_USER:     ${{ secrets.ADMIN_DEFAULT_USER }}
-            ADMIN_DEFAULT_PASSWORD: ${{ secrets.ADMIN_DEFAULT_PASSWORD }}
-            ADMIN_DEFAULT_EMAIL:    ${{ secrets.ADMIN_DEFAULT_EMAIL }}
-            DB_HOST:                ${{ needs.provision.outputs.db_host }}
-            DB_PORT:                ${{ needs.provision.outputs.db_port }}
-            DB_USERNAME:            ${{ needs.provision.outputs.db_username }}
-            DB_PASSWORD:            ${{ needs.provision.outputs.db_password }}
+        env:
+          PHP_IMAGE:              ghcr.io/${{ env.IMAGE_NAME }}:latest
+          ADMIN_DEFAULT_USER:     ${{ secrets.ADMIN_DEFAULT_USER }}
+          ADMIN_DEFAULT_PASSWORD: ${{ secrets.ADMIN_DEFAULT_PASSWORD }}
+          ADMIN_DEFAULT_EMAIL:    ${{ secrets.ADMIN_DEFAULT_EMAIL }}
+          DB_HOST:                ${{ needs.provision.outputs.db_host }}
+          DB_PORT:                ${{ needs.provision.outputs.db_port }}
+          DB_USERNAME:            ${{ needs.provision.outputs.db_username }}
+          DB_PASSWORD:            ${{ needs.provision.outputs.db_password }}
