@@ -5,9 +5,9 @@ services:
     image: ${PHP_IMAGE:-ghcr.io/axiamax/axialy-admin-php:latest}
     restart: unless-stopped
     env_file:
-      - /opt/axialy/.env          # written by Ansible
+      - /opt/axialy/.env
     volumes:
-      - ../axialy-admin-product:/var/www/html:ro
+      - ./axialy-admin-product:/var/www/html:ro
     networks: [ web ]
 
   nginx:
@@ -17,7 +17,7 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      - ../axialy-admin-product:/var/www/html:ro
+      - ./axialy-admin-product:/var/www/html:ro
       - /etc/letsencrypt:/etc/letsencrypt:ro
     depends_on: [ php ]
     networks: [ web ]
