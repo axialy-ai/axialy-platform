@@ -1,3 +1,6 @@
+###############################################################################
+#  Axialy Platform – Terraform
+###############################################################################
 terraform {
   required_providers {
     digitalocean = {
@@ -12,7 +15,7 @@ provider "digitalocean" {
 }
 
 ###############################################################################
-# ── SSH key ──────────────────────────────────────────────────────────────────
+#  SSH key (imported or created)
 ###############################################################################
 resource "digitalocean_ssh_key" "axialy" {
   name       = "axialy-key"
@@ -20,7 +23,7 @@ resource "digitalocean_ssh_key" "axialy" {
 }
 
 ###############################################################################
-# ── Managed MySQL cluster + DBs + users ─────────────────────────────────────
+#  Managed MySQL cluster
 ###############################################################################
 resource "digitalocean_database_cluster" "axialy" {
   name       = "axialy-cluster"
@@ -31,16 +34,18 @@ resource "digitalocean_database_cluster" "axialy" {
   node_count = 1
 }
 
+# ── Databases (mixed-case names, per requirement) ────────────────────────────
 resource "digitalocean_database_db" "admin" {
   cluster_id = digitalocean_database_cluster.axialy.id
-  name       = "axialy_admin"
+  name       = "Axialy_ADMIN"
 }
 
 resource "digitalocean_database_db" "ui" {
   cluster_id = digitalocean_database_cluster.axialy.id
-  name       = "axialy_ui"
+  name       = "Axialy_UI"
 }
 
+# ── Users (same credentials for both DBs) ────────────────────────────────────
 resource "digitalocean_database_user" "admin_user" {
   cluster_id = digitalocean_database_cluster.axialy.id
   name       = "axialy_admin_user"
@@ -52,7 +57,7 @@ resource "digitalocean_database_user" "ui_user" {
 }
 
 ###############################################################################
-# ── Droplet ──────────────────────────────────────────────────────────────────
+#  Droplet running the container stack
 ###############################################################################
 resource "digitalocean_droplet" "admin" {
   name       = "axialy-admin-droplet"
@@ -62,11 +67,36 @@ resource "digitalocean_droplet" "admin" {
   ipv6       = true
   monitoring = true
 
-  ssh_keys = [digitalocean_ssh_key.axialy.id]
+  ssh_keys   = [digitalocean_ssh_key.axialy.id]
 
   user_data = <<EOF
 #cloud-config
 package_update: true
 package_upgrade: true
 EOF
+}
+
+###############################################################################
+#  Outputs consumed by the GitHub workflow
+###############################################################################
+output "droplet_ip" {
+  description = "Public IPv4 of the admin droplet"
+  value       = digitalocean_droplet.admin.ipv4_address
+}
+
+output "db_host" {
+  value = digitalocean_database_cluster.axialy.host
+}
+
+output "db_port" {
+  value = digitalocean_database_cluster.axialy.port
+}
+
+output "db_username" {
+  value = digitalocean_database_user.admin_user.name
+}
+
+output "db_password" {
+  value     = digitalocean_database_user.admin_user.password
+  sensitive = true
 }
