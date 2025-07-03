@@ -35,11 +35,21 @@
         mode: '0600'
         content: |
           # Axialy Admin runtime variables
+          # ── Admin DB ───────────────────────────────────────────────
           DB_HOST={{ db_host }}
           DB_PORT={{ db_port }}
           DB_NAME=Axialy_ADMIN
           DB_USER={{ db_username }}
           DB_PASSWORD={{ db_password }}
+
+          # ── UI DB ─────────────────────────────────────────────────
+          UI_DB_HOST={{ db_host }}
+          UI_DB_PORT={{ db_port }}
+          UI_DB_NAME=Axialy_UI
+          UI_DB_USER={{ db_username }}
+          UI_DB_PASSWORD={{ db_password }}
+
+          # ── Admin bootstrap user ─────────────────────────────────
           ADMIN_DEFAULT_USER={{ admin_user }}
           ADMIN_DEFAULT_PASSWORD={{ admin_pass }}
           ADMIN_DEFAULT_EMAIL={{ admin_email }}
