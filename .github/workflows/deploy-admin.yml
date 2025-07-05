@@ -1,11 +1,17 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Axialy Admin – CI / CD
+#  • manual trigger only (workflow_dispatch)
+#  • builds the PHP-FPM image, provisions DigitalOcean infra with Terraform,
+#    then configures the droplet with Ansible
+# ─────────────────────────────────────────────────────────────────────────────
 name: Deploy Axialy Admin
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:        # ↩ manual “Run workflow” button
 
 permissions:
   contents: read
-  packages: write
+  packages: write           # push to GHCR
 
 env:
   REGISTRY: ghcr.io
@@ -13,14 +19,14 @@ env:
 
 jobs:
 ###############################################################################
-# ─────────────────────────── Job 1 – Build & Push ────────────────────────────
+# ────────────────────────── Job 1 – Build & push image ──────────────────────
 ###############################################################################
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Log in to GitHub container registry
+      - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -29,12 +35,13 @@ jobs:
 
       - name: Build & push PHP image
         run: |
+          set -euo pipefail
           IMAGE="$REGISTRY/${{ env.IMAGE_NAME }}:latest"
           docker build -t "$IMAGE" -f docker/php/Dockerfile .
           docker push "$IMAGE"
 
 ###############################################################################
-# ───────── Job 2 – Terraform (droplet + DB cluster) ──────────────────────────
+# ─────────────────── Job 2 – Terraform (droplet + DB) ───────────────────────
 ###############################################################################
   provision:
     needs: build
@@ -45,56 +52,28 @@ jobs:
     env:
       DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
       TF_VAR_do_token:    ${{ secrets.DIGITALOCEAN_TOKEN }}
+      TF_VAR_ssh_pub_key: ${{ secrets.DROPLET_SSH_KEY }}
       TF_VAR_region:      "nyc3"
 
     steps:
       - uses: actions/checkout@v4
 
-      # 1️⃣ detect existing resources (cluster & SSH key) ---------------------
-      - name: Detect existing DO resources
+      # 1️⃣ Detect an existing DB cluster (optional) --------------------------
+      - name: Detect existing DB cluster
         id: detect
         shell: bash
-        env:
-          DO_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
         run: |
           set -euo pipefail
-          echo "::group::Install doctl + jq"
-          sudo snap install doctl
+          sudo snap install doctl             # reliable on Ubuntu 24 runners
           sudo apt-get -qq update
           sudo apt-get -qq install -y jq
-          echo "::endgroup::"
-
-          export DIGITALOCEAN_ACCESS_TOKEN="$DO_TOKEN"
-
-          # quick PAT sanity-check – will exit non-zero if the token is wrong
-          doctl account get >/dev/null
-
-          # ── 1. database cluster ───────────────────────────────────────────
+          doctl auth init --access-token "$DIGITALOCEAN_TOKEN"
           CID=$(doctl databases list --output json \
-                  | jq -r '.[] | select(.name=="axialy-cluster") | .id // empty')
+                | jq -r '.[] | select(.name=="axialy-cluster") | .id // empty')
           echo "cluster_id=$CID" >> "$GITHUB_OUTPUT"
 
-          # ── 2. SSH key (must exist, we won’t attempt to create it here) ───
-          KEY_ID=$(doctl ssh-key list --format ID,Name --no-header \
-                      | awk '$2=="axialy-key"{print $1}')
-          echo "ssh_key_id=$KEY_ID" >> "$GITHUB_OUTPUT"
-
-          # fail fast if the account is on-hold (403 on create) OR
-          # if the required SSH key is missing
-          if [[ -z "$KEY_ID" ]]; then
-            echo "::error::SSH key \"axialy-key\" not found in your DO account. \
-Please create it once (or rename an existing key) and re-run the workflow."
-            exit 1
-          fi
-
-          if [[ -z "$CID" ]]; then
-            echo "::error::DigitalOcean reports your team is on HOLD – \
-managed DB creation will fail. Resolve the billing/hold before deploying."
-            exit 1
-          fi
-
-      # 2️⃣ Terraform ---------------------------------------------------------
-      - name: Setup Terraform
+      # 2️⃣ Terraform init / import / apply ----------------------------------
+      - name: Setup Terraform CLI
         uses: hashicorp/setup-terraform@v2
         with:
           terraform_wrapper: false
@@ -102,30 +81,31 @@ managed DB creation will fail. Resolve the billing/hold before deploying."
       - name: Terraform init
         run: terraform init -input=false
 
-      # import the pre-existing DB cluster & children
-      - name: Import existing cluster (idempotent)
+      - name: Import existing cluster (if found)
+        if: steps.detect.outputs.cluster_id != ''
         run: |
+          set -euo pipefail
           CID='${{ steps.detect.outputs.cluster_id }}'
-          terraform import -input=false digitalocean_database_cluster.axialy "$CID" || true
+          terraform import -input=false \
+            'digitalocean_database_cluster.axialy' "$CID" || true
           terraform import -allow-missing-config -input=false \
-            digitalocean_database_db.ui "${CID}:Axialy_UI" || true
+            'digitalocean_database_db.ui'    "${CID}:Axialy_UI"    || true
           terraform import -allow-missing-config -input=false \
-            digitalocean_database_db.admin "${CID}:Axialy_ADMIN" || true
+            'digitalocean_database_db.admin' "${CID}:Axialy_ADMIN" || true
           terraform import -allow-missing-config -input=false \
-            digitalocean_database_user.admin_user "${CID}:axialy_admin_user" || true
+            'digitalocean_database_user.admin_user' "${CID}:axialy_admin_user" || true
           terraform import -allow-missing-config -input=false \
-            digitalocean_database_user.ui_user "${CID}:axialy_ui_user" || true
+            'digitalocean_database_user.ui_user'    "${CID}:axialy_ui_user"    || true
 
       - name: Terraform apply
-        run: |
-          terraform apply -auto-approve -input=false \
-            -var="ssh_key_id=${{ steps.detect.outputs.ssh_key_id }}"
+        run: terraform apply -auto-approve -input=false
 
-      # 3️⃣ expose outputs to next job ----------------------------------------
+      # 3️⃣ Expose outputs to next job ---------------------------------------
       - name: Capture outputs
         id: tfout
         shell: bash
         run: |
+          set -euo pipefail
           for var in droplet_ip db_host db_port db_username db_password ; do
             val=$(terraform output -raw "$var")
             echo "::add-mask::$val"
@@ -140,7 +120,7 @@ managed DB creation will fail. Resolve the billing/hold before deploying."
       db_password: ${{ steps.tfout.outputs.db_password }}
 
 ###############################################################################
-# ────────── Job 3 – Configure droplet & deploy containers ────────────────────
+# ───────────────── Job 3 – Configure droplet & deploy stack ─────────────────
 ###############################################################################
   configure:
     needs: provision
