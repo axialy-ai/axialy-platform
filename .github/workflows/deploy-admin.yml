@@ -67,7 +67,7 @@ jobs:
         run: |
           echo "${{ secrets.DROPLET_SSH_KEY }}" > private_key.pem
           chmod 600 private_key.pem
-          SSH_PUB_KEY=$(ssh-keygen -y -f private_key.pem)
+          SSH_PUB_KEY=$(ssh-keygen -y -f private_key.pem -P "${{ secrets.DROPLET_SSH_PASSPHRASE }}")
           rm -f private_key.pem
           echo "public_key<<EOF" >> $GITHUB_OUTPUT
           echo "$SSH_PUB_KEY" >> $GITHUB_OUTPUT
@@ -142,6 +142,8 @@ jobs:
         run: |
           echo "${{ secrets.DROPLET_SSH_KEY }}" > ssh_key.pem
           chmod 600 ssh_key.pem
+          # Remove passphrase from key for Ansible
+          ssh-keygen -p -f ssh_key.pem -P "${{ secrets.DROPLET_SSH_PASSPHRASE }}" -N ""
 
       - name: Run Ansible playbook
         uses: dawidd6/action-ansible-playbook@v2
