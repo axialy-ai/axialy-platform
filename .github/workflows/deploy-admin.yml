@@ -1,16 +1,16 @@
 ###############################################################################
-#  Axialy Admin – CI / CD
-#  • manual trigger only (workflow_dispatch)
+#  Axialy Admin – CI / CD    (MANUAL ONLY)
+#  • start from the “Actions” tab via workflow_dispatch
 ###############################################################################
 name: Deploy Axialy Admin
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:           # ← manual trigger only
     inputs:
       run_infra:
-        description: "Run Terraform provisioning (true) or just redeploy the app"
+        description: 'Run Terraform provisioning (true) or just redeploy the app)'
         required: false
-        default: "true"
+        default: 'true'
 
 permissions:
   contents:  read
