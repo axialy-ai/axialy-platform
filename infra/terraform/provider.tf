@@ -1,12 +1,14 @@
+###############################################################################
+#  Axialy Platform – Terraform PROVIDERS
+###############################################################################
+
 terraform {
+  required_version = ">= 1.5.0"
+
   required_providers {
     digitalocean = {
       source  = "digitalocean/digitalocean"
       version = "~> 2.34"
-    }
-    namesilo = {               # community provider
-      source  = "doitintl/namesilo"
-      version = "0.3.1"
     }
     random = {
       source  = "hashicorp/random"
@@ -15,10 +17,16 @@ terraform {
   }
 }
 
+# ── DigitalOcean (only one default configuration!) ───────────────────────────
 provider "digitalocean" {
   token = var.do_token
 }
 
-provider "namesilo" {
-  api_key = var.namesilo_api_key
+/*  If, in the future, you need extra DigitalOcean credentials (e.g. for a
+    different DO account or region), add them *with an alias*, e.g.:
+
+provider "digitalocean" {
+  alias = "secondary"
+  token = var.secondary_do_token
 }
+*/
