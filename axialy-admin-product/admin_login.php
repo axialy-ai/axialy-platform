@@ -1,5 +1,4 @@
 <?php
-// /home/i17z4s936h3j/public_html/admin.axialy.com/admin_login.php
 
 /*********************************************************************
  *  Hard-en cookie settings *before* the session is created
