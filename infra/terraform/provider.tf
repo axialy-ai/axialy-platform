@@ -1,9 +1,8 @@
 ###############################################################################
-#  Axialy Platform – Terraform PROVIDERS
+#  Providers – keep **exactly one** “terraform” and **one** default provider
 ###############################################################################
-
 terraform {
-  required_version = ">= 1.5.0"
+  required_version = ">= 1.7.0"
 
   required_providers {
     digitalocean = {
@@ -17,16 +16,6 @@ terraform {
   }
 }
 
-# ── DigitalOcean (only one default configuration!) ───────────────────────────
 provider "digitalocean" {
-  token = var.do_token
+  token = var.do_token   # set by TF_VAR_do_token in the workflow
 }
-
-/*  If, in the future, you need extra DigitalOcean credentials (e.g. for a
-    different DO account or region), add them *with an alias*, e.g.:
-
-provider "digitalocean" {
-  alias = "secondary"
-  token = var.secondary_do_token
-}
-*/
