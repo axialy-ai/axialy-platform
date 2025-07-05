@@ -1,23 +1,69 @@
 ###############################################################################
-#  Axialy Platform – Terraform MAIN
-#  ---------------------------------------------------------------------------
-#  This file intentionally assumes the SSH key already exists in DigitalOcean
-#  (we detect it in the GitHub workflow and pass its ID via var.ssh_key_id).
+#  Axialy Admin – base infrastructure
+#  • one MySQL cluster, two databases (Admin + UI), one user per DB
+#  • one droplet that will run the PHP-FPM stack (installed later by Ansible)
 ###############################################################################
 
-#################################
-#  Managed MySQL cluster
-#################################
+terraform {
+  required_providers {
+    digitalocean = {
+      source  = "digitalocean/digitalocean"
+      version = "~> 2.34"
+    }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.5"
+    }
+  }
+}
+
+###############################################################################
+# ─────────────────────────────── Variables ───────────────────────────────────
+###############################################################################
+variable "do_token"      { type = string }
+variable "ssh_pub_key"   { type = string }
+variable "region"        { type = string }
+
+###############################################################################
+# ────────────────────────────── Provider ─────────────────────────────────────
+###############################################################################
+provider "digitalocean" {
+  token = var.do_token
+}
+
+###############################################################################
+# ────────────────────────────── SSH key (one-time) ───────────────────────────
+###############################################################################
+resource "digitalocean_ssh_key" "axialy" {
+  name       = "axialy-key"
+  public_key = var.ssh_pub_key
+}
+
+###############################################################################
+# ───────────────────────────── Password helpers ──────────────────────────────
+###############################################################################
+resource "random_password" "db_password_admin" {
+  length  = 32
+  special = true
+}
+
+resource "random_password" "db_password_ui" {
+  length  = 32
+  special = true
+}
+
+###############################################################################
+# ──────────────────────── Managed MySQL cluster + DBs ────────────────────────
+###############################################################################
 resource "digitalocean_database_cluster" "axialy" {
   name       = "axialy-cluster"
   engine     = "mysql"
-  version    = "8"
-  size       = "db-s-1vcpu-1gb"
+  version    = 8
   region     = var.region
+  size       = "db-s-1vcpu-1gb"
   node_count = 1
 }
 
-# ── Databases (mixed-case names, per requirement) ────────────────────────────
 resource "digitalocean_database_db" "admin" {
   cluster_id = digitalocean_database_cluster.axialy.id
   name       = "Axialy_ADMIN"
@@ -28,20 +74,21 @@ resource "digitalocean_database_db" "ui" {
   name       = "Axialy_UI"
 }
 
-# ── Users (same credentials for both DBs) ────────────────────────────────────
 resource "digitalocean_database_user" "admin_user" {
   cluster_id = digitalocean_database_cluster.axialy.id
   name       = "axialy_admin_user"
+  password   = random_password.db_password_admin.result
 }
 
 resource "digitalocean_database_user" "ui_user" {
   cluster_id = digitalocean_database_cluster.axialy.id
   name       = "axialy_ui_user"
+  password   = random_password.db_password_ui.result
 }
 
-#################################
-#  Droplet running the container stack
-#################################
+###############################################################################
+# ─────────────────────────────── Droplet ─────────────────────────────────────
+###############################################################################
 resource "digitalocean_droplet" "admin" {
   name       = "axialy-admin-droplet"
   region     = var.region
@@ -49,25 +96,8 @@ resource "digitalocean_droplet" "admin" {
   size       = "s-1vcpu-1gb"
   ipv6       = true
   monitoring = true
+  ssh_keys   = [digitalocean_ssh_key.axialy.fingerprint]
 
-  # the key has been created previously – just reference its ID
-  ssh_keys   = [var.ssh_key_id]
-
-  user_data = <<EOF
-#cloud-config
-package_update: true
-package_upgrade: true
-EOF
-}
-
-###############################################################################
-#  Outputs consumed by the GitHub workflow
-###############################################################################
-output "droplet_ip"  { value = digitalocean_droplet.admin.ipv4_address }
-output "db_host"     { value = digitalocean_database_cluster.axialy.host }
-output "db_port"     { value = digitalocean_database_cluster.axialy.port }
-output "db_username" { value = digitalocean_database_user.admin_user.name }
-output "db_password" {
-  value     = digitalocean_database_user.admin_user.password
-  sensitive = true
+  # cloud-init will be supplied by Ansible later; placeholder is fine
+  user_data = "#cloud-config\npackage_update: true\n"
 }
