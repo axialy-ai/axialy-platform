@@ -1,5 +1,5 @@
 ###############################################################################
-#  Axialy Admin-stack resources
+#  Axialy Admin-stack resources – NO outputs here, they live in outputs.tf
 ###############################################################################
 
 #############################
@@ -22,7 +22,7 @@ resource "digitalocean_database_cluster" "axialy" {
   node_count = 1
 }
 
-# Two logical databases inside the same cluster
+# Two logical databases in the same cluster
 resource "digitalocean_database_db" "admin" {
   cluster_id = digitalocean_database_cluster.axialy.id
   name       = "Axialy_ADMIN"
@@ -45,17 +45,17 @@ resource "digitalocean_database_user" "ui_user" {
 }
 
 #############################
-#  Droplet that will run the Admin PHP container
+#  Droplet that hosts the Admin container
 #############################
 resource "digitalocean_droplet" "admin" {
-  name              = "axialy-admin-droplet"
-  region            = var.region
-  size              = "s-1vcpu-1gb"
-  image             = "ubuntu-22-04-x64"
-  ipv6              = true
-  monitoring        = true
-  ssh_keys          = [digitalocean_ssh_key.axialy.id]
+  name       = "axialy-admin-droplet"
+  region     = var.region
+  size       = "s-1vcpu-1gb"
+  image      = "ubuntu-22-04-x64"
+  ipv6       = true
+  monitoring = true
+  ssh_keys   = [digitalocean_ssh_key.axialy.id]
 
-  # cloud-init user-data installs Docker & pulls the GHCR image
+  # cloud-init installs Docker and pulls the GHCR image
   user_data = file("${path.module}/cloud-init.yml")
 }
