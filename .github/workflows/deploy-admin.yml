@@ -1,49 +1,34 @@
-# ──────────────────────────────────────────────────────────────────────────────
-#  Axialy Platform – CI/CD  ▸  Deploy Admin stack to DigitalOcean
-# ──────────────────────────────────────────────────────────────────────────────
-#
-#  Secrets required in the repository (or org) settings
-#  ─────────────────────────────────────────────────────
-#  GH_PAT              – GitHub PAT with  ‘write:packages’  (publish to GHCR)
-#  DIGITALOCEAN_TOKEN  – DO PAT with      ‘Read/Write Databases’ + ‘Read Droplets’
-#  DROPLET_SSH_KEY     – Private part of the SSH key that Terraform imports
-#  ADMIN_DEFAULT_*     – Bootstrap admin credentials (see Ansible playbook)
-#
 name: Deploy Axialy Admin
 
 on:
-  workflow_dispatch:        # manual trigger only
+  workflow_dispatch:
 
-# The workflow’s default GITHUB_TOKEN only needs read-access – we push with GH_PAT
 permissions:
   contents: read
-  packages: write           # required when using a PAT to publish
+  packages: write
 
 env:
-  REGISTRY:    ghcr.io
-  IMAGE_NAME:  axiamax/axialy-admin-php   # final: ghcr.io/axiamax/axialy-admin-php:latest
+  REGISTRY: ghcr.io
+  IMAGE_NAME: axiamax/axialy-admin-php   # ghcr.io/axiamax/axialy-admin-php:latest
 
+jobs:
 ###############################################################################
 # ─────────────────────────── Job 1 – Build & Push ────────────────────────────
 ###############################################################################
-jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
 
-      # ---- Authenticate to GHCR ------------------------------------------------
-      - name: Log in to GitHub Container Registry
+      - name: Log in to GitHub container registry
         uses: docker/login-action@v3
         with:
-          registry:   ${{ env.REGISTRY }}
-          username:   ${{ github.repository_owner }}
-          password:   ${{ secrets.GH_PAT }}
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GH_PAT }}
 
       - name: Build & push PHP image
         run: |
-          set -euo pipefail
           IMAGE="$REGISTRY/${{ env.IMAGE_NAME }}:latest"
           docker build -t "$IMAGE" -f docker/php/Dockerfile .
           docker push "$IMAGE"
@@ -58,41 +43,57 @@ jobs:
       run:
         working-directory: infra/terraform
     env:
-      DIGITALOCEAN_TOKEN:  ${{ secrets.DIGITALOCEAN_TOKEN }}
-      TF_VAR_do_token:     ${{ secrets.DIGITALOCEAN_TOKEN }}
-      TF_VAR_ssh_pub_key:  ${{ secrets.DROPLET_SSH_KEY }}
-      TF_VAR_region:       "nyc3"
+      DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+      TF_VAR_do_token:    ${{ secrets.DIGITALOCEAN_TOKEN }}
+      TF_VAR_region:      "nyc3"
 
     steps:
       - uses: actions/checkout@v4
 
-      # 1️⃣  Detect existing DB cluster (optional) --------------------------------
-      - name: Detect existing DB cluster
+      # 1️⃣ detect existing resources (cluster & SSH key) ---------------------
+      - name: Detect existing DO resources
         id: detect
         shell: bash
         env:
-          # doctl discovers the token via this env-var – no interactive config
-          DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          DO_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
         run: |
           set -euo pipefail
-          set -x                       # show every command – easier debugging
-
-          # ---- Install doctl + jq (Ubuntu 24.04) --------------------------------
-          sudo snap install doctl       # snap is the most reliable path on GHA runners
+          echo "::group::Install doctl + jq"
+          sudo snap install doctl
           sudo apt-get -qq update
           sudo apt-get -qq install -y jq
-          # -----------------------------------------------------------------------
+          echo "::endgroup::"
 
-          # Sanity-check the PAT early – will exit non-zero if scopes/token are bad
+          export DIGITALOCEAN_ACCESS_TOKEN="$DO_TOKEN"
+
+          # quick PAT sanity-check – will exit non-zero if the token is wrong
           doctl account get >/dev/null
 
-          # Look for an existing managed MySQL cluster named “axialy-cluster”
+          # ── 1. database cluster ───────────────────────────────────────────
           CID=$(doctl databases list --output json \
                   | jq -r '.[] | select(.name=="axialy-cluster") | .id // empty')
-
           echo "cluster_id=$CID" >> "$GITHUB_OUTPUT"
 
-      # 2️⃣  Terraform init / import / apply --------------------------------------
+          # ── 2. SSH key (must exist, we won’t attempt to create it here) ───
+          KEY_ID=$(doctl ssh-key list --format ID,Name --no-header \
+                      | awk '$2=="axialy-key"{print $1}')
+          echo "ssh_key_id=$KEY_ID" >> "$GITHUB_OUTPUT"
+
+          # fail fast if the account is on-hold (403 on create) OR
+          # if the required SSH key is missing
+          if [[ -z "$KEY_ID" ]]; then
+            echo "::error::SSH key \"axialy-key\" not found in your DO account. \
+Please create it once (or rename an existing key) and re-run the workflow."
+            exit 1
+          fi
+
+          if [[ -z "$CID" ]]; then
+            echo "::error::DigitalOcean reports your team is on HOLD – \
+managed DB creation will fail. Resolve the billing/hold before deploying."
+            exit 1
+          fi
+
+      # 2️⃣ Terraform ---------------------------------------------------------
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
         with:
@@ -101,25 +102,26 @@ jobs:
       - name: Terraform init
         run: terraform init -input=false
 
-      - name: Import existing cluster (if found)
-        if: steps.detect.outputs.cluster_id != ''
+      # import the pre-existing DB cluster & children
+      - name: Import existing cluster (idempotent)
         run: |
           CID='${{ steps.detect.outputs.cluster_id }}'
-          terraform import -input=false \
-            'digitalocean_database_cluster.axialy' "$CID" || true
+          terraform import -input=false digitalocean_database_cluster.axialy "$CID" || true
           terraform import -allow-missing-config -input=false \
-            'digitalocean_database_db.ui'    "${CID}:Axialy_UI"    || true
+            digitalocean_database_db.ui "${CID}:Axialy_UI" || true
           terraform import -allow-missing-config -input=false \
-            'digitalocean_database_db.admin' "${CID}:Axialy_ADMIN" || true
+            digitalocean_database_db.admin "${CID}:Axialy_ADMIN" || true
           terraform import -allow-missing-config -input=false \
-            'digitalocean_database_user.admin_user' "${CID}:axialy_admin_user" || true
+            digitalocean_database_user.admin_user "${CID}:axialy_admin_user" || true
           terraform import -allow-missing-config -input=false \
-            'digitalocean_database_user.ui_user'    "${CID}:axialy_ui_user"    || true
+            digitalocean_database_user.ui_user "${CID}:axialy_ui_user" || true
 
       - name: Terraform apply
-        run: terraform apply -auto-approve -input=false
+        run: |
+          terraform apply -auto-approve -input=false \
+            -var="ssh_key_id=${{ steps.detect.outputs.ssh_key_id }}"
 
-      # 3️⃣  Expose outputs to next job -------------------------------------------
+      # 3️⃣ expose outputs to next job ----------------------------------------
       - name: Capture outputs
         id: tfout
         shell: bash
@@ -131,19 +133,18 @@ jobs:
           done
 
     outputs:
-      droplet_ip:   ${{ steps.tfout.outputs.droplet_ip }}
-      db_host:      ${{ steps.tfout.outputs.db_host }}
-      db_port:      ${{ steps.tfout.outputs.db_port }}
-      db_username:  ${{ steps.tfout.outputs.db_username }}
-      db_password:  ${{ steps.tfout.outputs.db_password }}
+      droplet_ip:  ${{ steps.tfout.outputs.droplet_ip }}
+      db_host:     ${{ steps.tfout.outputs.db_host }}
+      db_port:     ${{ steps.tfout.outputs.db_port }}
+      db_username: ${{ steps.tfout.outputs.db_username }}
+      db_password: ${{ steps.tfout.outputs.db_password }}
 
 ###############################################################################
-# ─────────── Job 3 – Configure droplet & deploy containers ───────────────────
+# ────────── Job 3 – Configure droplet & deploy containers ────────────────────
 ###############################################################################
   configure:
     needs: provision
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
 
