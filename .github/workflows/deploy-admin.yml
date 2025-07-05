@@ -1,26 +1,16 @@
 ###############################################################################
 #  Axialy Admin – CI / CD
-#  ▸ can be started manually from the Actions tab (workflow_dispatch)  
-#  ▸ also runs automatically when Terraform or the workflow itself changes
+#  • manual trigger only (workflow_dispatch)
 ###############################################################################
 name: Deploy Axialy Admin
 
 on:
-  # —— manual trigger ————————————————————————————————
   workflow_dispatch:
     inputs:
       run_infra:
-        description: 'Run Terraform provisioning (true) or just redeploy the app)'
+        description: "Run Terraform provisioning (true) or just redeploy the app"
         required: false
-        default: 'true'
-
-  # —— automatic trigger (edit these paths to taste) —————————
-  push:
-    branches: [main]
-    paths:
-      - 'infra/terraform/**'
-      - '.github/workflows/deploy-admin.yml'
-      - 'docker/php/**'
+        default: "true"
 
 permissions:
   contents:  read
