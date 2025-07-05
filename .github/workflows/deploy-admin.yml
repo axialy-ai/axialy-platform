@@ -3,14 +3,14 @@ name: Deploy Axialy Admin
 on:
   workflow_dispatch:        # manual trigger only
 
-# ── give the workflow’s GITHUB_TOKEN just read; we’ll push with a PAT instead
+# ── workflow token permissions ───────────────────────────────────────────────
 permissions:
   contents: read
   packages: write           # required when using a PAT to publish
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: axiamax/axialy-admin-php   # final image: ghcr.io/axiamax/axialy-admin-php:latest
+  IMAGE_NAME: axiamax/axialy-admin-php   # ghcr.io/axiamax/axialy-admin-php:latest
 
 ###############################################################################
 # ─────────────────────────── Job 1 – Build & Push ────────────────────────────
@@ -21,8 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ---- Authenticate to GHCR with a PAT that has write:packages -----------
-      # Add this token in the repo/org secrets as GH_PAT
+      # Authenticate to GHCR with a PAT stored as GH_PAT
       - name: Log in to GitHub container registry
         uses: docker/login-action@v3
         with:
@@ -53,18 +52,25 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      # 1️⃣ detect existing DB cluster (optional) ------------------------------
+
+      # 1️⃣ Detect existing DB cluster (optional)
       - name: Detect existing DB cluster
         id: detect
         shell: bash
         run: |
-          sudo apt-get -qq update && sudo apt-get -qq install -y doctl jq
+          # -- Install doctl from DigitalOcean’s official APT repository -------
+          sudo apt-get -qq update
+          sudo apt-get -qq install -y curl jq
+          curl -sL https://repos.digitalocean.com/install.sh | sudo bash
+          sudo apt-get -qq install -y doctl
+          # --------------------------------------------------------------------
           doctl auth init --access-token "$DIGITALOCEAN_TOKEN"
+
           CID=$(doctl databases list --output json |
                 jq -r '.[] | select(.name=="axialy-cluster") | .id // empty')
           echo "cluster_id=$CID" >> "$GITHUB_OUTPUT"
 
-      # 2️⃣ Terraform init / import / apply -----------------------------------
+      # 2️⃣ Terraform init / import / apply
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
         with:
@@ -91,7 +97,7 @@ jobs:
       - name: Terraform apply
         run: terraform apply -auto-approve -input=false
 
-      # 3️⃣ expose outputs to next job ----------------------------------------
+      # 3️⃣ Expose outputs to next job
       - name: Capture outputs
         id: tfout
         shell: bash
