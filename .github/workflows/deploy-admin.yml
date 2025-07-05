@@ -8,7 +8,7 @@ on:
   workflow_dispatch:           # ← manual trigger only
     inputs:
       run_infra:
-        description: 'Run Terraform provisioning (true) or just redeploy the app)'
+        description: 'Run Terraform manually only - never on push'
         required: false
         default: 'true'
 
