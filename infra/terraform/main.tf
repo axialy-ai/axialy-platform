@@ -1,30 +1,22 @@
 ###############################################################################
-#  Axialy Platform – Terraform
+#  Axialy Platform – Terraform MAIN
+#  ---------------------------------------------------------------------------
+#  • Only *resources* live here.
+#  • Provider configurations and outputs have been moved to separate files
+#    to avoid any duplication errors.
 ###############################################################################
-terraform {
-  required_providers {
-    digitalocean = {
-      source  = "digitalocean/digitalocean"
-      version = "~> 2.34"
-    }
-  }
-}
 
-provider "digitalocean" {
-  token = var.do_token
-}
-
-###############################################################################
+#################################
 #  SSH key (imported or created)
-###############################################################################
+#################################
 resource "digitalocean_ssh_key" "axialy" {
   name       = "axialy-key"
   public_key = var.ssh_pub_key
 }
 
-###############################################################################
+#################################
 #  Managed MySQL cluster
-###############################################################################
+#################################
 resource "digitalocean_database_cluster" "axialy" {
   name       = "axialy-cluster"
   engine     = "mysql"
@@ -56,9 +48,9 @@ resource "digitalocean_database_user" "ui_user" {
   name       = "axialy_ui_user"
 }
 
-###############################################################################
+#################################
 #  Droplet running the container stack
-###############################################################################
+#################################
 resource "digitalocean_droplet" "admin" {
   name       = "axialy-admin-droplet"
   region     = var.region
@@ -74,29 +66,4 @@ resource "digitalocean_droplet" "admin" {
 package_update: true
 package_upgrade: true
 EOF
-}
-
-###############################################################################
-#  Outputs consumed by the GitHub workflow
-###############################################################################
-output "droplet_ip" {
-  description = "Public IPv4 of the admin droplet"
-  value       = digitalocean_droplet.admin.ipv4_address
-}
-
-output "db_host" {
-  value = digitalocean_database_cluster.axialy.host
-}
-
-output "db_port" {
-  value = digitalocean_database_cluster.axialy.port
-}
-
-output "db_username" {
-  value = digitalocean_database_user.admin_user.name
-}
-
-output "db_password" {
-  value     = digitalocean_database_user.admin_user.password
-  sensitive = true
 }
