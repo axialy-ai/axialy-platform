@@ -1,8 +1,26 @@
-# ─────────────────────────────────────────────────────────────────────────────
-#  Axialy Admin – CI/CD pipeline (manual trigger)
-# ─────────────────────────────────────────────────────────────────────────────
+###############################################################################
+#  Axialy Admin – CI / CD
+#  ▸ can be started manually from the Actions tab (workflow_dispatch)  
+#  ▸ also runs automatically when Terraform or the workflow itself changes
+###############################################################################
 name: Deploy Axialy Admin
-on: {workflow_dispatch:}
+
+on:
+  # —— manual trigger ————————————————————————————————
+  workflow_dispatch:
+    inputs:
+      run_infra:
+        description: 'Run Terraform provisioning (true) or just redeploy the app)'
+        required: false
+        default: 'true'
+
+  # —— automatic trigger (edit these paths to taste) —————————
+  push:
+    branches: [main]
+    paths:
+      - 'infra/terraform/**'
+      - '.github/workflows/deploy-admin.yml'
+      - 'docker/php/**'
 
 permissions:
   contents:  read
@@ -13,7 +31,7 @@ env:
   IMAGE_NAME: axiamax/axialy-admin-php
 
 ###############################################################################
-# ─────────────────────────── Job 1 – Docker build ───────────────────────────
+# ─────────────────────────── Job 1 – Docker build ────────────────────────────
 ###############################################################################
 jobs:
   build:
@@ -36,10 +54,11 @@ jobs:
           docker push "$IMAGE"
 
 ###############################################################################
-# ───────────────────── Job 2 – Terraform provision ──────────────────────────
+# ───────────────────── Job 2 – Terraform provision (optional) ────────────────
 ###############################################################################
   provision:
     needs: build
+    if: ${{ github.event.inputs.run_infra != 'false' }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -108,10 +127,10 @@ jobs:
       ui_db_password:       ${{ steps.tfout.outputs.ui_db_password }}
 
 ###############################################################################
-# ──────────────── Job 3 – Ansible configure & deploy ────────────────────────
+# ──────────────── Job 3 – Ansible configure / redeploy ───────────────────────
 ###############################################################################
   configure:
-    needs: provision
+    needs: [build, provision]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -122,26 +141,26 @@ jobs:
           playbook: infra/ansible/playbook.yml
           inventory: |
             [all]
-            ${{ needs.provision.outputs.droplet_ip }}
+            ${{ needs.provision.outputs.droplet_ip || 'PLACEHOLDER_IP' }}
           options: |
             --private-key ${{ secrets.DROPLET_SSH_KEY }}
             --user root
         env:
-          PHP_IMAGE:               ghcr.io/${{ env.IMAGE_NAME }}:latest
+          PHP_IMAGE: ghcr.io/${{ env.IMAGE_NAME }}:latest
 
           # Admin DB creds
-          ADMIN_DB_HOST:           ${{ needs.provision.outputs.admin_db_host }}
-          ADMIN_DB_PORT:           ${{ needs.provision.outputs.admin_db_port }}
-          ADMIN_DB_USERNAME:       ${{ needs.provision.outputs.admin_db_username }}
-          ADMIN_DB_PASSWORD:       ${{ needs.provision.outputs.admin_db_password }}
+          ADMIN_DB_HOST:      ${{ needs.provision.outputs.admin_db_host }}
+          ADMIN_DB_PORT:      ${{ needs.provision.outputs.admin_db_port }}
+          ADMIN_DB_USERNAME:  ${{ needs.provision.outputs.admin_db_username }}
+          ADMIN_DB_PASSWORD:  ${{ needs.provision.outputs.admin_db_password }}
 
           # UI DB creds
-          UI_DB_HOST:              ${{ needs.provision.outputs.ui_db_host }}
-          UI_DB_PORT:              ${{ needs.provision.outputs.ui_db_port }}
-          UI_DB_USERNAME:          ${{ needs.provision.outputs.ui_db_username }}
-          UI_DB_PASSWORD:          ${{ needs.provision.outputs.ui_db_password }}
+          UI_DB_HOST:         ${{ needs.provision.outputs.ui_db_host }}
+          UI_DB_PORT:         ${{ needs.provision.outputs.ui_db_port }}
+          UI_DB_USERNAME:     ${{ needs.provision.outputs.ui_db_username }}
+          UI_DB_PASSWORD:     ${{ needs.provision.outputs.ui_db_password }}
 
           # Default admin bootstrap
-          ADMIN_DEFAULT_USER:      ${{ secrets.ADMIN_DEFAULT_USER }}
-          ADMIN_DEFAULT_PASSWORD:  ${{ secrets.ADMIN_DEFAULT_PASSWORD }}
-          ADMIN_DEFAULT_EMAIL:     ${{ secrets.ADMIN_DEFAULT_EMAIL }}
+          ADMIN_DEFAULT_USER:     ${{ secrets.ADMIN_DEFAULT_USER }}
+          ADMIN_DEFAULT_PASSWORD: ${{ secrets.ADMIN_DEFAULT_PASSWORD }}
+          ADMIN_DEFAULT_EMAIL:    ${{ secrets.ADMIN_DEFAULT_EMAIL }}
