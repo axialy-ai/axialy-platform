@@ -9,12 +9,10 @@
  *        UI_DB_HOST, UI_DB_PORT, UI_DB_NAME, UI_DB_USER, UI_DB_PASSWORD
  *    (see infra/ansible roles)
  *
- *  ► Fallback for local-dev – read a legacy “.env.<env>” file that sits
- *    outside the repo, e.g. /home/…/private_axialy/.env.production
+ *  ► Fallback for local-dev – read a ".env" file that sits in the project root
  *
  *  After this file is included, `$pdoUI` is available to callers.
  */
-
 declare(strict_types=1);
 
 // make sure we can access $_SESSION['admin_env']
@@ -27,33 +25,31 @@ if (session_status() === PHP_SESSION_NONE) {
  * ------------------------------------------------------------------------*/
 $env   = $_SESSION['admin_env'] ?? 'production';
 $env   = preg_replace('/[^A-Za-z0-9_\-]/', '', $env);   // simple hardening
-$port  = getenv('UI_DB_PORT') ?: '3306';
-$db    = getenv('UI_DB_NAME') ?: 'axialy_ui';
 
 /* --------------------------------------------------------------------------
- *  (2) Either grab credentials from environment variables …
+ *  (2) Get credentials from environment variables
  * ------------------------------------------------------------------------*/
-$host = getenv('UI_DB_HOST');
-$user = getenv('UI_DB_USER');
-$pass = getenv('UI_DB_PASSWORD');
+$host = getenv('UI_DB_HOST') ?: '';
+$port = getenv('UI_DB_PORT') ?: '3306';
+$db   = getenv('UI_DB_NAME') ?: 'Axialy_UI';
+$user = getenv('UI_DB_USER') ?: '';
+$pass = getenv('UI_DB_PASSWORD') ?: '';
 
-if ($host && $user && $pass) {
-    // good to go ✨
-} else {
-    /* ----------------------------------------------------------------------
-     *  (3) … or fall back to a local `.env.<env>` file for developers who
-     *       run the PHP code outside Docker.
-     * --------------------------------------------------------------------*/
-    $legacyFile = sprintf(
-        '/home/i17z4s936h3j/private_axialy/.env.%s',
-        $env
-    );
-    if (!is_readable($legacyFile)) {
-        $legacyFile = '/home/i17z4s936h3j/private_axialy/.env.production';
-    }
-
-    if (is_readable($legacyFile)) {
-        foreach (file($legacyFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
+/* --------------------------------------------------------------------------
+ *  (3) Local-dev fallback – read .env file from project root if env vars empty
+ * ------------------------------------------------------------------------*/
+if ($host === '' || $user === '' || $pass === '') {
+    $candidates = [
+        dirname(__DIR__, 2) . '/.env',     // project root
+        dirname(__DIR__, 3) . '/.env',     // one level higher
+    ];
+    
+    foreach ($candidates as $file) {
+        if (!is_readable($file)) {
+            continue;
+        }
+        
+        foreach (file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
             $line = trim($line);
             if ($line === '' || $line[0] === '#') {
                 continue;
@@ -66,13 +62,14 @@ if ($host && $user && $pass) {
                 putenv("$k=$v");
             }
         }
-
+        
         // re-load after putenv()
-        $host = getenv('DB_HOST');
-        $port = getenv('DB_PORT') ?: $port;
-        $db   = getenv('DB_NAME') ?: $db;
-        $user = getenv('DB_USER');
-        $pass = getenv('DB_PASSWORD');
+        $host = getenv('UI_DB_HOST') ?: getenv('DB_HOST') ?: $host;
+        $port = getenv('UI_DB_PORT') ?: getenv('DB_PORT') ?: $port;
+        $db   = getenv('UI_DB_NAME') ?: getenv('DB_NAME') ?: $db;
+        $user = getenv('UI_DB_USER') ?: getenv('DB_USER') ?: $user;
+        $pass = getenv('UI_DB_PASSWORD') ?: getenv('DB_PASSWORD') ?: $pass;
+        break;
     }
 }
 
@@ -81,8 +78,8 @@ if ($host && $user && $pass) {
  * ------------------------------------------------------------------------*/
 if (!$host || !$user || !$pass) {
     throw new RuntimeException(
-        'UI DB credentials are missing. Make sure the Ansible-written .env '
-        .'file is mounted or set UI_DB_* variables.'
+        'UI DB credentials are missing. Make sure UI_DB_* environment variables are set '
+        .'or a readable .env file exists in the project root.'
     );
 }
 
