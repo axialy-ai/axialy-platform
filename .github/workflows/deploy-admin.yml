@@ -8,7 +8,7 @@ on:
   workflow_dispatch:           # ← manual trigger only
     inputs:
       run_infra:
-        description: 'Run Terraform manually only - never on push'
+        description: 'Run Terraform and the Deploy Axialy Admin workflow manually only - never on push'
         required: false
         default: 'true'
 
