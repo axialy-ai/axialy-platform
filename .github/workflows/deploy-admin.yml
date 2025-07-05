@@ -1,14 +1,14 @@
-# .github/workflows/deploy-admin.yml
 ###############################################################################
 #  Axialy Admin – CI / CD    (MANUAL ONLY)
+#  • start from the "Actions" tab via workflow_dispatch
 ###############################################################################
 name: Deploy Axialy Admin
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:           # ← manual trigger only
     inputs:
       run_infra:
-        description: 'Run Terraform and the Deploy Axialy Admin workflow manually only – never on push'
+        description: 'Run Terraform and the Deploy Axialy Admin workflow manually only - never on push'
         required: false
         default: 'true'
 
@@ -56,11 +56,22 @@ jobs:
     env:
       DIGITALOCEAN_TOKEN:  ${{ secrets.DIGITALOCEAN_TOKEN }}
       TF_VAR_do_token:     ${{ secrets.DIGITALOCEAN_TOKEN }}
-      TF_VAR_ssh_key_id:   ${{ secrets.SSH_FINGERPRINT }}   # ← NEW
+      TF_VAR_ssh_pub_key:  ${{ secrets.DROPLET_SSH_KEY }}
       TF_VAR_region:       "nyc3"
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Extract SSH public key
+        id: ssh_key
+        run: |
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > private_key.pem
+          chmod 600 private_key.pem
+          SSH_PUB_KEY=$(ssh-keygen -y -f private_key.pem)
+          rm -f private_key.pem
+          echo "public_key<<EOF" >> $GITHUB_OUTPUT
+          echo "$SSH_PUB_KEY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Detect existing DB cluster
         id: detect
@@ -77,7 +88,7 @@ jobs:
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
-        with: { terraform_wrapper: false }
+        with: {terraform_wrapper: false}
 
       - name: Terraform init
         run: terraform init -input=false
@@ -91,6 +102,8 @@ jobs:
 
       - name: Terraform apply
         run: terraform apply -auto-approve -input=false
+        env:
+          TF_VAR_ssh_pub_key: ${{ steps.ssh_key.outputs.public_key }}
 
       - name: Capture TF outputs
         id: tfout
@@ -117,13 +130,18 @@ jobs:
       ui_db_password:       ${{ steps.tfout.outputs.ui_db_password }}
 
 ###############################################################################
-# ─────────────── Job 3 – Ansible configure / redeploy ────────────────────────
+# ──────────────── Job 3 – Ansible configure / redeploy ───────────────────────
 ###############################################################################
   configure:
-    needs: [ build, provision ]
+    needs: [build, provision]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Write SSH key
+        run: |
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ssh_key.pem
+          chmod 600 ssh_key.pem
 
       - name: Run Ansible playbook
         uses: dawidd6/action-ansible-playbook@v2
@@ -131,26 +149,30 @@ jobs:
           playbook: infra/ansible/playbook.yml
           inventory: |
             [all]
-            ${{ needs.provision.outputs.droplet_ip || 'PLACEHOLDER_IP' }}
+            ${{ needs.provision.outputs.droplet_ip }}
+          key: ssh_key.pem
           options: |
-            --private-key ${{ secrets.DROPLET_SSH_KEY }}
             --user root
         env:
           PHP_IMAGE: ghcr.io/${{ env.IMAGE_NAME }}:latest
 
-          # Primary (Admin) DB creds
-          DB_HOST:      ${{ needs.provision.outputs.admin_db_host }}
-          DB_PORT:      ${{ needs.provision.outputs.admin_db_port }}
-          DB_USERNAME:  ${{ needs.provision.outputs.admin_db_username }}
-          DB_PASSWORD:  ${{ needs.provision.outputs.admin_db_password }}
+          # Admin DB creds
+          ADMIN_DB_HOST:      ${{ needs.provision.outputs.admin_db_host }}
+          ADMIN_DB_PORT:      ${{ needs.provision.outputs.admin_db_port }}
+          ADMIN_DB_USERNAME:  ${{ needs.provision.outputs.admin_db_username }}
+          ADMIN_DB_PASSWORD:  ${{ needs.provision.outputs.admin_db_password }}
 
           # UI DB creds
-          UI_DB_HOST:   ${{ needs.provision.outputs.ui_db_host }}
-          UI_DB_PORT:   ${{ needs.provision.outputs.ui_db_port }}
-          UI_DB_USERNAME: ${{ needs.provision.outputs.ui_db_username }}
-          UI_DB_PASSWORD: ${{ needs.provision.outputs.ui_db_password }}
+          UI_DB_HOST:         ${{ needs.provision.outputs.ui_db_host }}
+          UI_DB_PORT:         ${{ needs.provision.outputs.ui_db_port }}
+          UI_DB_USERNAME:     ${{ needs.provision.outputs.ui_db_username }}
+          UI_DB_PASSWORD:     ${{ needs.provision.outputs.ui_db_password }}
 
           # Default admin bootstrap
           ADMIN_DEFAULT_USER:     ${{ secrets.ADMIN_DEFAULT_USER }}
           ADMIN_DEFAULT_PASSWORD: ${{ secrets.ADMIN_DEFAULT_PASSWORD }}
           ADMIN_DEFAULT_EMAIL:    ${{ secrets.ADMIN_DEFAULT_EMAIL }}
+
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f ssh_key.pem
