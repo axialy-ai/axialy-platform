@@ -3,6 +3,11 @@ name: CI
 on:
   pull_request:
   workflow_dispatch:        # manual run from the “Actions” tab
+    inputs:
+      run_infra:
+        description: 'Run CI manually only - never on push'
+        required: false
+        default: 'true'
 
 jobs:
   php-lint:
