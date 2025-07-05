@@ -1,0 +1,27 @@
+#cloud-config
+package_update: true
+package_upgrade: true
+
+packages:
+  - apt-transport-https
+  - ca-certificates
+  - curl
+  - gnupg
+  - lsb-release
+  - software-properties-common
+
+runcmd:
+  # Install Docker
+  - curl -fsSL https://get.docker.com | sh
+  - systemctl enable docker
+  - systemctl start docker
+  
+  # Install Docker Compose plugin
+  - apt-get update
+  - apt-get install -y docker-compose-plugin
+  
+  # Create directories
+  - mkdir -p /opt/axialy
+  
+  # Log completion
+  - echo "Cloud-init completed at $(date)" >> /var/log/cloud-init-output.log
