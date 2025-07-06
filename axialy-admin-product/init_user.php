@@ -1,5 +1,4 @@
 <?php
-// /home/i17z4s936h3j/public_html/admin.axialy.com/init_user.php
 header('Content-Type: application/json');
 
 // Check request method
