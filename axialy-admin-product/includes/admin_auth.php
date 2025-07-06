@@ -1,5 +1,4 @@
 <?php
-// /home/i17z4s936h3j/public_html/admin.axialy.com/includes/admin_auth.php
 require_once __DIR__ . '/AdminDBConfig.php';
 use Axialy\AdminConfig\AdminDBConfig;
 
