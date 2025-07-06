@@ -1,5 +1,4 @@
 <?php
-// /home/i17z4s936h3j/public_html/admin.axialy.com/includes/environment_selector.php
 /**
  * Determines which Axialy UI environment the admin session is working with.
  * Falls back to “production” when nothing is set.
