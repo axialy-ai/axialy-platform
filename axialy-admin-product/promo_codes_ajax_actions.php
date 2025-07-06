@@ -1,5 +1,4 @@
 <?php
-// /admin.axialy.com/promo_codes_ajax_actions.php
 
 // 1) Set session name & start session
 //    So that requireAdminAuth() won't rename the session and cause warnings:
