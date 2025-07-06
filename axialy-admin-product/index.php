@@ -1,5 +1,4 @@
 <?php
-// /home/i17z4s936h3j/public_html/admin.axialy.com/index.php
 session_name('axialy_admin_session');
 session_start();
 
